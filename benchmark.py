@@ -65,7 +65,8 @@ def run_benchmark(test_filepath: str, is_trained: bool):
                 if "__end__" in event:
                     final_event = event["__end__"]
 
-            critique_scores = final_event.get('critique_scores', [])
+            final_state = final_event or {}
+            critique_scores = final_state.get('critique_scores', [])
             
             row_data = {'case_id': case_id}
             for item in critique_scores:
