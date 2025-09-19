@@ -15,7 +15,16 @@ embeddings = HuggingFaceEmbeddings(
 
 # PostgreSQL 연결 정보
 # docker-compose.yml에 설정한 값과 동일해야 합니다.
-connection_string = "postgresql+psycopg2://user:password@localhost:5432/vectordb"
+postgres_host = os.getenv("POSTGRES_HOST", "localhost")
+postgres_port = os.getenv("POSTGRES_PORT", os.getenv("PGPORT", "5433"))
+postgres_db = os.getenv("POSTGRES_DB", "vectordb")
+postgres_user = os.getenv("POSTGRES_USER", "user")
+postgres_password = os.getenv("POSTGRES_PASSWORD", "password")
+
+connection_string = (
+    f"postgresql+psycopg2://{postgres_user}:{postgres_password}"
+    f"@{postgres_host}:{postgres_port}/{postgres_db}"
+)
 collection_name = "agent_court_cases"
 
 # PGVector 스토어 객체 생성
