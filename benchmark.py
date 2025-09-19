@@ -24,7 +24,7 @@ def run_benchmark(test_filepath: str, is_trained: bool):
         redis_client.flushall()
         console.console.print("🔴 Redis DB가 초기화되었습니다.")
         try:
-            vector_store.drop_collection()
+            vector_store.delete_collection()
             console.console.print("🔴 PostgreSQL 벡터 DB가 초기화되었습니다.")
         except Exception as e:
             console.console.print(f"🟡 PostgreSQL 벡터 DB 초기화 중 참고: {e}")
@@ -67,7 +67,7 @@ def run_benchmark(test_filepath: str, is_trained: bool):
 
             final_state = final_event or {}
             critique_scores = final_state.get('critique_scores', [])
-            
+
             row_data = {'case_id': case_id}
             for item in critique_scores:
                 criteria = item.get('criteria')
