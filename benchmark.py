@@ -65,7 +65,8 @@ def run_benchmark(test_filepath: str, is_trained: bool):
                 if "__end__" in event:
                     final_event = event["__end__"]
 
-            critique_scores = final_event.get('critique_scores', [])
+            final_state = final_event or {}
+            critique_scores = final_state.get('critique_scores', [])
             
             row_data = {'case_id': case_id}
             for item in critique_scores:
@@ -110,7 +111,7 @@ if __name__ == "__main__":
 
     # 현재 스크립트 파일의 위치를 기준으로 데이터 파일 경로 설정
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    test_dataset_path = os.path.join(current_dir, "test.jsonl")
+    test_dataset_path = os.path.join(current_dir, "data", "test.jsonl")
     
     if args.mode == 'untrained':
         run_benchmark(test_dataset_path, is_trained=False)

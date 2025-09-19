@@ -3,6 +3,18 @@ import redis
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from dotenv import load_dotenv
+__all__ = (
+    "llm",
+    "redis_client",
+    "lawyer_chain",
+    "judge_chain",
+    "presiding_judge_chain",
+    "batch_judge_chain",
+    "evaluation_chain",
+    "reflection_chain",
+    "critic_chain",
+    "JUDGE_PERSONALITY_POOL",
+)
 
 # .env 파일에서 환경 변수 로드
 load_dotenv()
@@ -86,6 +98,25 @@ presiding_judge_prompt_template = """
 """
 presiding_judge_prompt = ChatPromptTemplate.from_template(presiding_judge_prompt_template)
 presiding_judge_chain = presiding_judge_prompt | llm
+
+# ------------------- 일괄 판결 생성 에이전트 -------------------
+batch_judge_prompt_template = """
+# 역할(Role)
+당신은 재판을 주재하는 판사입니다.
+# 임무(Mission)
+아래에 주어진 원고와 피고의 진술을 바탕으로 사건의 쟁점을 정리하고, 최종 판결문을 작성하세요.
+판결문은 반드시 "주문:"으로 시작해야 하며, 핵심 판시 이유를 2~3문장으로 덧붙이세요.
+과도하게 긴 설명은 피하고 명확하고 간결하게 작성합니다.
+---
+[원고측 진술]
+{plaintiff_statement}
+[피고측 진술]
+{defendant_statement}
+---
+[최종 판결문]
+"""
+batch_judge_prompt = ChatPromptTemplate.from_template(batch_judge_prompt_template)
+batch_judge_chain = batch_judge_prompt | llm
 
 # ------------------- 학습/진화 에이전트 -------------------
 evaluation_prompt_template = """
