@@ -1,0 +1,9 @@
+langchain
+langgraph
+langchain_openai
+redis
+rich
+sentence-transformers
+psycopg2-binary
+langchain-postgres
+python-dotenv

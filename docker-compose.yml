@@ -1,0 +1,38 @@
+version: '3.8'
+services:
+  redis:
+    image: redis:latest
+    container_name: agent_court_db
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: agent_court_vector_db
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=vectordb
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql # 👈 이 줄 추가
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: agent_court_pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@admin.com
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+
+volumes:
+  redis_data:
+  postgres_data:
