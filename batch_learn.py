@@ -92,5 +92,5 @@ def run_batch_learning(filepath: str):
 if __name__ == "__main__":
     # 현재 스크립트 파일의 위치를 기준으로 데이터 파일 경로 설정
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    dataset_path = os.path.join(current_dir, "train.jsonl")
+    dataset_path = os.path.join(current_dir, "data", "train.jsonl")
     run_batch_learning(dataset_path)
