@@ -16,4 +16,5 @@ class TrialState(TypedDict):
     max_turns: int
     associate_judge_verdicts: List[AgentSpeech]
     final_verdict: Optional[str]
-    critique_scores: Optional[list] # 👈 벤치마크 점수를 저장할 필드 
+    plaintiff_outcome: Optional[str]
+    critique_scores: Optional[list]  # 👈 벤치마크 점수를 저장할 필드
