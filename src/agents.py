@@ -1,8 +1,11 @@
 import os
+from typing import List, Literal, Optional
+
 import redis
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from dotenv import load_dotenv
+from langchain_core.language_models import BaseChatModel
+from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel, Field
 __all__ = (
     "llm",
     "redis_client",
@@ -13,18 +16,95 @@ __all__ = (
     "evaluation_chain",
     "reflection_chain",
     "critic_chain",
+    "CRITIQUE_CRITERIA",
     "JUDGE_PERSONALITY_POOL",
 )
 
 # .env 파일에서 환경 변수 로드
 load_dotenv()
 
-# OPENAI_API_KEY가 설정되지 않았다면 오류 메시지와 함께 종료
-if not os.getenv("OPENAI_API_KEY"):
-    raise ValueError("환경 변수에 OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인해주세요.")
+
+def _init_llm() -> BaseChatModel:
+    """환경 변수에 따라 사용할 LLM 클라이언트를 초기화합니다."""
+
+    llm_provider = os.getenv("LLM_PROVIDER", "openai").lower()
+    temperature = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+
+    if llm_provider == "openai":
+        from langchain_openai import ChatOpenAI
+
+        if not os.getenv("OPENAI_API_KEY"):
+            raise ValueError(
+                "환경 변수에 OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인해주세요."
+            )
+
+        openai_model = os.getenv("OPENAI_MODEL", "gpt-4o")
+        return ChatOpenAI(model=openai_model, temperature=temperature)
+
+    if llm_provider == "nvidia":
+        try:
+            from langchain_nvidia_ai_endpoints import ChatNVIDIA
+        except ImportError as exc:  # pragma: no cover - import error 확인용
+            raise ImportError(
+                "langchain-nvidia-ai-endpoints 패키지가 설치되어 있어야 합니다."
+            ) from exc
+
+        if not os.getenv("NVIDIA_API_KEY"):
+            raise ValueError(
+                "환경 변수에 NVIDIA_API_KEY가 설정되지 않았습니다. .env 파일을 확인해주세요."
+            )
+
+        nvidia_model = os.getenv("NVIDIA_NIM_MODEL", "meta/llama3-70b-instruct")
+        base_url: Optional[str] = os.getenv("NVIDIA_NIM_BASE_URL")
+
+        llm_kwargs = {"model": nvidia_model, "temperature": temperature}
+        if base_url:
+            llm_kwargs["base_url"] = base_url
+
+        return ChatNVIDIA(**llm_kwargs)
+
+    raise ValueError(
+        "지원하지 않는 LLM_PROVIDER 값입니다. openai 또는 nvidia 중 하나를 사용해주세요."
+    )
+
 
 # 사용할 LLM 모델 설정
-llm = ChatOpenAI(model="gpt-4o", temperature=0.7)
+llm = _init_llm()
+
+
+class CritiqueItem(BaseModel):
+    """판결 품질 평가 항목을 구조화한 스키마."""
+
+    criteria: Literal["논리적 일관성", "법률적 타당성", "사회적 가치 고려"] = Field(
+        ...,
+        description="평가 기준 이름",
+    )
+    score: Literal[0, 1] = Field(
+        ...,
+        description="기준 충족 여부. 충족 시 1, 미충족 시 0",
+    )
+    reason: str = Field(
+        ...,
+        min_length=1,
+        description="해당 점수를 부여한 이유",
+    )
+
+
+class CritiqueEvaluation(BaseModel):
+    """세 가지 기준에 대한 평가 결과 목록."""
+
+    evaluations: List[CritiqueItem] = Field(
+        ...,
+        min_items=3,
+        description="각 기준별 평가 결과 목록",
+    )
+
+
+CRITIQUE_CRITERIA: List[str] = [
+    "논리적 일관성",
+    "법률적 타당성",
+    "사회적 가치 고려",
+]
 
 # ------------------- 데이터베이스 클라이언트 -------------------
 redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
@@ -161,7 +241,14 @@ critic_prompt_template = """
 아래의 '변호사 토론 기록'과 '최종 판결문'을 읽고, 다음 세 가지 기준 각각에 대해 판결의 품질이 기준을 '충족'하는지 '미충족'하는지 판단해주세요.
 - 기준을 충족하면 score에 1, 미충족이면 0을 부여하세요.
 - 그 이유(reason)를 한 문장으로 간결하게 설명해주세요.
-결과는 반드시 아래 JSON 형식에 맞춰서만 출력해야 합니다.
+결과는 반드시 하나의 JSON 객체로만 출력해야 하며, 아래 스키마를 따라야 합니다.
+{
+    "evaluations": [
+        {"criteria": "논리적 일관성", "score": 0 또는 1, "reason": "..."},
+        {"criteria": "법률적 타당성", "score": 0 또는 1, "reason": "..."},
+        {"criteria": "사회적 가치 고려", "score": 0 또는 1, "reason": "..."}
+    ]
+}
 # 평가 기준
 1.  **논리적 일관성 (Logical Consistency)**: 변호사들의 주장과 최종 판결의 논리가 일관되는가?
 2.  **법률적 타당성 (Legal Validity)**: 판결이 법률 원칙과 상식적인 법 감정에 부합하는가?
@@ -172,14 +259,9 @@ critic_prompt_template = """
 [최종 판결문]
 {final_verdict}
 ---
-[
-    {{"criteria": "논리적 일관성", "score": [0 또는 1], "reason": "..."}},
-    {{"criteria": "법률적 타당성", "score": [0 또는 1], "reason": "..."}},
-    {{"criteria": "사회적 가치 고려", "score": [0 또는 1], "reason": "..."}}
-]
 """
 critic_prompt = ChatPromptTemplate.from_template(critic_prompt_template)
-critic_chain = critic_prompt | llm
+critic_chain = critic_prompt | llm.with_structured_output(CritiqueEvaluation)
 
 # ------------------- 데이터 및 설정 -------------------
 JUDGE_PERSONALITY_POOL = [

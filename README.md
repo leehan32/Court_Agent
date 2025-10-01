@@ -39,7 +39,10 @@ cd [레포지토리 폴더]
 # .env.example 파일을 복사하여 .env 파일을 만듭니다.
 cp .env.example .env
 
-# 3. .env 파일을 열어 YOUR_API_KEY 부분을 실제 OpenAI API 키로 교체합니다.
+# 3. .env 파일을 열어 사용할 LLM 공급자에 맞게 환경 변수를 설정합니다.
+#    - 기본값은 OpenAI이므로 `OPENAI_API_KEY`(필수)와 `OPENAI_MODEL`(선택)을 채웁니다.
+#    - NVIDIA NIM을 사용하려면 `LLM_PROVIDER=nvidia`, `NVIDIA_API_KEY`를 지정하고
+#      필요 시 `NVIDIA_NIM_MODEL`, `NVIDIA_NIM_BASE_URL`을 설정합니다.
 # (선택) LangSmith 추적을 원하면 해당 부분의 주석을 해제하고 정보를 입력합니다.
 
 # 4. 필요한 파이썬 라이브러리를 설치합니다.
@@ -78,6 +81,12 @@ python benchmark.py --mode untrained
 python benchmark.py --mode trained
 ```
 테스트가 끝나면, 결과는 터미널과 `benchmark_results_... .csv` 파일로 저장됩니다.
+CSV에는 각 사건의 정답 라벨(`expected_outcome`), 모델 판결(`model_outcome`), 일치 여부(`is_correct`),
+세 가지 품질 기준별 점수와 사유가 함께 기록됩니다.
+실행이 끝나면 정확도, Macro F1, 원고 승소율 등의 정량 지표가 요약 표로 출력됩니다.
+
+> ℹ️ `data/test.jsonl`에는 각 사건의 예상 판결 결과를 나타내는 `expected_outcome` 필드가 포함되어야 하며,
+>    값은 `승리`, `패배`, `무승부` 중 하나여야 합니다.
 
 ## 🗃️ 데이터베이스 관리
 

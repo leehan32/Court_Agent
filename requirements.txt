@@ -2,6 +2,7 @@ langchain
 langchain-community
 langgraph
 langchain_openai
+langchain-nvidia-ai-endpoints
 redis
 rich
 sentence-transformers

@@ -1,5 +1,6 @@
 import random
-import json
+from typing import Any, Dict, Optional
+
 from src.state import TrialState
 import src.console as console
 from src.agents import (
@@ -10,7 +11,8 @@ from src.agents import (
     presiding_judge_chain,
     evaluation_chain,
     reflection_chain,
-    critic_chain
+    critic_chain,
+    CRITIQUE_CRITERIA
 )
 from src.vector_db import add_case_to_db, search_similar_cases
 
@@ -121,6 +123,7 @@ def update_knowledge_base_node(state: TrialState):
     
     evaluation_response = evaluation_chain.invoke({"final_verdict": state['final_verdict']})
     plaintiff_outcome = evaluation_response.content.strip()
+    state['plaintiff_outcome'] = plaintiff_outcome
     console.console.print(f"분석 결과: 원고측 '{plaintiff_outcome}'\n")
 
     outcomes = {
@@ -168,24 +171,84 @@ def critique_node(state: TrialState):
         [f"{msg['agent_name']}: {msg['speech']}" for msg in state['debate_transcript']]
     )
 
-    critique_response = critic_chain.invoke({
-        "transcript": transcript_str,
-        "final_verdict": state['final_verdict']
-    })
-    
-    scores = []
-    try:
-        scores = json.loads(critique_response.content.strip())
-        
-        console.console.print("\n[bold]판결 품질 벤치마크:[/bold]")
-        for item in scores:
-            result = "[bold green]PASS[/bold green]" if item.get('score') == 1 else "[bold red]FAIL[/bold red]"
-            console.console.print(f"- [bold]{item.get('criteria', 'N/A')}[/bold]: {result}")
-            console.console.print(f"  (평가 이유: {item.get('reason', 'N/A')})")
-            
-    except (json.JSONDecodeError, TypeError):
-        console.console.print("\n[bold yellow]품질 평가 결과(Raw):[/bold yellow]")
-        console.console.print(critique_response.content)
+    default_scores: Dict[str, Dict[str, Any]] = {
+        criteria: {
+            "criteria": criteria,
+            "score": 0,
+            "reason": "평가가 생성되지 않았습니다.",
+        }
+        for criteria in CRITIQUE_CRITERIA
+    }
+    failure_reason: Optional[str] = None
+    structured_dump: Optional[Dict[str, Any]] = None
 
-    state['critique_scores'] = scores
+    try:
+        critique_response = critic_chain.invoke({
+            "transcript": transcript_str,
+            "final_verdict": state['final_verdict']
+        })
+
+        if hasattr(critique_response, "model_dump"):
+            structured_dump = critique_response.model_dump()  # type: ignore[assignment]
+            evaluations = structured_dump.get("evaluations", [])
+        elif isinstance(critique_response, dict):
+            structured_dump = critique_response
+            evaluations = structured_dump.get("evaluations", [])
+        else:
+            evaluations = getattr(critique_response, "evaluations", [])
+
+        if evaluations is None:
+            evaluations = []
+
+        for item in evaluations:
+            if hasattr(item, "model_dump"):
+                item_data = item.model_dump()  # type: ignore[assignment]
+            elif isinstance(item, dict):
+                item_data = item
+            else:
+                item_data = {
+                    "criteria": getattr(item, "criteria", None),
+                    "score": getattr(item, "score", 0),
+                    "reason": getattr(item, "reason", ""),
+                }
+
+            criteria = item_data.get("criteria")
+            if criteria not in default_scores:
+                continue
+
+            try:
+                score_value = int(item_data.get("score", 0))
+            except (TypeError, ValueError):
+                score_value = 0
+
+            reason_text = (item_data.get("reason") or "").strip() or "평가 이유가 제공되지 않았습니다."
+            default_scores[criteria] = {
+                "criteria": criteria,
+                "score": 1 if score_value == 1 else 0,
+                "reason": reason_text,
+            }
+
+        if structured_dump is not None and len(structured_dump.get("evaluations", [])) < len(CRITIQUE_CRITERIA):
+            console.console.print("\n[bold yellow]일부 평가 항목이 누락되었습니다. 원본 응답을 검토하세요:[/bold yellow]")
+            console.console.print(structured_dump)
+
+    except Exception as error:
+        failure_reason = str(error)
+        console.console.print(f"\n[bold yellow]품질 평가 생성 중 오류:[/bold yellow] {failure_reason}")
+
+    for criteria, info in default_scores.items():
+        if info["reason"] == "평가가 생성되지 않았습니다.":
+            if failure_reason:
+                info["reason"] = f"평가 실패: {failure_reason}"
+            else:
+                info["reason"] = "LLM이 해당 기준에 대한 평가를 제공하지 않았습니다."
+
+    console.console.print("\n[bold]판결 품질 벤치마크:[/bold]")
+    for item in default_scores.values():
+        result = "[bold green]PASS[/bold green]" if item["score"] == 1 else "[bold red]FAIL[/bold red]"
+        console.console.print(f"- [bold]{item['criteria']}[/bold]: {result}")
+        console.console.print(f"  (평가 이유: {item['reason']})")
+
+    state['critique_scores'] = list(default_scores.values())
+
     return state
