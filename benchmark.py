@@ -85,7 +85,18 @@ def run_benchmark(test_filepath: str, is_trained: bool):
                 if "__end__" in event:
                     final_event = event["__end__"]
 
-            final_state = final_event or {}
+            # LangGraph의 최종 이벤트는 {"state": {...}} 혹은 {"return": {...}} 형태로
+            # 래핑되어 전달될 수 있으므로, 실제 상태 딕셔너리를 안전하게 추출합니다.
+            final_state_data = final_event or {}
+            if isinstance(final_state_data, dict):
+                if "state" in final_state_data and isinstance(final_state_data["state"], dict):
+                    final_state = final_state_data["state"]
+                elif "return" in final_state_data and isinstance(final_state_data["return"], dict):
+                    final_state = final_state_data["return"]
+                else:
+                    final_state = final_state_data
+            else:
+                final_state = {}
             critique_scores = final_state.get("critique_scores", []) or []
             model_outcome = final_state.get("plaintiff_outcome")
             expected_outcome = case.get("expected_outcome")
