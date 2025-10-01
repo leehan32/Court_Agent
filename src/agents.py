@@ -3,8 +3,10 @@ from typing import List, Literal, Optional
 
 import redis
 from dotenv import load_dotenv
-from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.language_models import BaseChatModel
+from langchain_openai import ChatOpenAI
+
 from pydantic import BaseModel, Field
 __all__ = (
     "llm",
@@ -105,6 +107,40 @@ CRITIQUE_CRITERIA: List[str] = [
     "법률적 타당성",
     "사회적 가치 고려",
 ]
+class CritiqueItem(BaseModel):
+    """판결 품질 평가 항목을 구조화한 스키마."""
+
+    criteria: Literal["논리적 일관성", "법률적 타당성", "사회적 가치 고려"] = Field(
+        ...,
+        description="평가 기준 이름",
+    )
+    score: Literal[0, 1] = Field(
+        ...,
+        description="기준 충족 여부. 충족 시 1, 미충족 시 0",
+    )
+    reason: str = Field(
+        ...,
+        min_length=1,
+        description="해당 점수를 부여한 이유",
+    )
+
+
+class CritiqueEvaluation(BaseModel):
+    """세 가지 기준에 대한 평가 결과 목록."""
+
+    evaluations: List[CritiqueItem] = Field(
+        ...,
+        min_items=3,
+        description="각 기준별 평가 결과 목록",
+    )
+
+
+CRITIQUE_CRITERIA: List[str] = [
+    "논리적 일관성",
+    "법률적 타당성",
+    "사회적 가치 고려",
+]
+
 
 # ------------------- 데이터베이스 클라이언트 -------------------
 redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
