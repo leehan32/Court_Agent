@@ -30,9 +30,10 @@ collection_name = "agent_court_cases"
 # PGVector 스토어 객체 생성
 # 이 객체를 통해 DB에 접속하고 데이터를 관리합니다.
 vector_store = PGVector(
-    connection_string=connection_string,
-    embedding_function=embeddings,
+    embeddings=embeddings,
     collection_name=collection_name,
+    connection=connection_string,
+    use_jsonb=True,
 )
 
 def add_case_to_db(case_summary: str, verdict: str, plaintiff_lesson: str, defendant_lesson: str):

@@ -107,8 +107,6 @@ CRITIQUE_CRITERIA: List[str] = [
     "법률적 타당성",
     "사회적 가치 고려",
 ]
-
-
 class CritiqueItem(BaseModel):
     """판결 품질 평가 항목을 구조화한 스키마."""
 
@@ -142,6 +140,7 @@ CRITIQUE_CRITERIA: List[str] = [
     "법률적 타당성",
     "사회적 가치 고려",
 ]
+
 
 # ------------------- 데이터베이스 클라이언트 -------------------
 redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
