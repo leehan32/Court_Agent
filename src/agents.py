@@ -1,8 +1,11 @@
 import os
+from typing import List, Literal
+
 import redis
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from dotenv import load_dotenv
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
 __all__ = (
     "llm",
     "redis_client",
@@ -13,6 +16,7 @@ __all__ = (
     "evaluation_chain",
     "reflection_chain",
     "critic_chain",
+    "CRITIQUE_CRITERIA",
     "JUDGE_PERSONALITY_POOL",
 )
 
@@ -25,6 +29,41 @@ if not os.getenv("OPENAI_API_KEY"):
 
 # 사용할 LLM 모델 설정
 llm = ChatOpenAI(model="gpt-4o", temperature=0.7)
+
+
+class CritiqueItem(BaseModel):
+    """판결 품질 평가 항목을 구조화한 스키마."""
+
+    criteria: Literal["논리적 일관성", "법률적 타당성", "사회적 가치 고려"] = Field(
+        ...,
+        description="평가 기준 이름",
+    )
+    score: Literal[0, 1] = Field(
+        ...,
+        description="기준 충족 여부. 충족 시 1, 미충족 시 0",
+    )
+    reason: str = Field(
+        ...,
+        min_length=1,
+        description="해당 점수를 부여한 이유",
+    )
+
+
+class CritiqueEvaluation(BaseModel):
+    """세 가지 기준에 대한 평가 결과 목록."""
+
+    evaluations: List[CritiqueItem] = Field(
+        ...,
+        min_items=3,
+        description="각 기준별 평가 결과 목록",
+    )
+
+
+CRITIQUE_CRITERIA: List[str] = [
+    "논리적 일관성",
+    "법률적 타당성",
+    "사회적 가치 고려",
+]
 
 # ------------------- 데이터베이스 클라이언트 -------------------
 redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
@@ -161,7 +200,14 @@ critic_prompt_template = """
 아래의 '변호사 토론 기록'과 '최종 판결문'을 읽고, 다음 세 가지 기준 각각에 대해 판결의 품질이 기준을 '충족'하는지 '미충족'하는지 판단해주세요.
 - 기준을 충족하면 score에 1, 미충족이면 0을 부여하세요.
 - 그 이유(reason)를 한 문장으로 간결하게 설명해주세요.
-결과는 반드시 아래 JSON 형식에 맞춰서만 출력해야 합니다.
+결과는 반드시 하나의 JSON 객체로만 출력해야 하며, 아래 스키마를 따라야 합니다.
+{
+    "evaluations": [
+        {"criteria": "논리적 일관성", "score": 0 또는 1, "reason": "..."},
+        {"criteria": "법률적 타당성", "score": 0 또는 1, "reason": "..."},
+        {"criteria": "사회적 가치 고려", "score": 0 또는 1, "reason": "..."}
+    ]
+}
 # 평가 기준
 1.  **논리적 일관성 (Logical Consistency)**: 변호사들의 주장과 최종 판결의 논리가 일관되는가?
 2.  **법률적 타당성 (Legal Validity)**: 판결이 법률 원칙과 상식적인 법 감정에 부합하는가?
@@ -172,14 +218,9 @@ critic_prompt_template = """
 [최종 판결문]
 {final_verdict}
 ---
-[
-    {{"criteria": "논리적 일관성", "score": [0 또는 1], "reason": "..."}},
-    {{"criteria": "법률적 타당성", "score": [0 또는 1], "reason": "..."}},
-    {{"criteria": "사회적 가치 고려", "score": [0 또는 1], "reason": "..."}}
-]
 """
 critic_prompt = ChatPromptTemplate.from_template(critic_prompt_template)
-critic_chain = critic_prompt | llm
+critic_chain = critic_prompt | llm.with_structured_output(CritiqueEvaluation)
 
 # ------------------- 데이터 및 설정 -------------------
 JUDGE_PERSONALITY_POOL = [

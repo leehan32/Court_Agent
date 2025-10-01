@@ -78,6 +78,12 @@ python benchmark.py --mode untrained
 python benchmark.py --mode trained
 ```
 테스트가 끝나면, 결과는 터미널과 `benchmark_results_... .csv` 파일로 저장됩니다.
+CSV에는 각 사건의 정답 라벨(`expected_outcome`), 모델 판결(`model_outcome`), 일치 여부(`is_correct`),
+세 가지 품질 기준별 점수와 사유가 함께 기록됩니다.
+실행이 끝나면 정확도, Macro F1, 원고 승소율 등의 정량 지표가 요약 표로 출력됩니다.
+
+> ℹ️ `data/test.jsonl`에는 각 사건의 예상 판결 결과를 나타내는 `expected_outcome` 필드가 포함되어야 하며,
+>    값은 `승리`, `패배`, `무승부` 중 하나여야 합니다.
 
 ## 🗃️ 데이터베이스 관리
 
