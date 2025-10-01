@@ -1,10 +1,12 @@
 import os
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 import redis
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
+
 from pydantic import BaseModel, Field
 __all__ = (
     "llm",
@@ -23,12 +25,88 @@ __all__ = (
 # .env 파일에서 환경 변수 로드
 load_dotenv()
 
-# OPENAI_API_KEY가 설정되지 않았다면 오류 메시지와 함께 종료
-if not os.getenv("OPENAI_API_KEY"):
-    raise ValueError("환경 변수에 OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인해주세요.")
+
+def _init_llm() -> BaseChatModel:
+    """환경 변수에 따라 사용할 LLM 클라이언트를 초기화합니다."""
+
+    llm_provider = os.getenv("LLM_PROVIDER", "openai").lower()
+    temperature = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+
+    if llm_provider == "openai":
+        from langchain_openai import ChatOpenAI
+
+        if not os.getenv("OPENAI_API_KEY"):
+            raise ValueError(
+                "환경 변수에 OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인해주세요."
+            )
+
+        openai_model = os.getenv("OPENAI_MODEL", "gpt-4o")
+        return ChatOpenAI(model=openai_model, temperature=temperature)
+
+    if llm_provider == "nvidia":
+        try:
+            from langchain_nvidia_ai_endpoints import ChatNVIDIA
+        except ImportError as exc:  # pragma: no cover - import error 확인용
+            raise ImportError(
+                "langchain-nvidia-ai-endpoints 패키지가 설치되어 있어야 합니다."
+            ) from exc
+
+        if not os.getenv("NVIDIA_API_KEY"):
+            raise ValueError(
+                "환경 변수에 NVIDIA_API_KEY가 설정되지 않았습니다. .env 파일을 확인해주세요."
+            )
+
+        nvidia_model = os.getenv("NVIDIA_NIM_MODEL", "meta/llama3-70b-instruct")
+        base_url: Optional[str] = os.getenv("NVIDIA_NIM_BASE_URL")
+
+        llm_kwargs = {"model": nvidia_model, "temperature": temperature}
+        if base_url:
+            llm_kwargs["base_url"] = base_url
+
+        return ChatNVIDIA(**llm_kwargs)
+
+    raise ValueError(
+        "지원하지 않는 LLM_PROVIDER 값입니다. openai 또는 nvidia 중 하나를 사용해주세요."
+    )
+
 
 # 사용할 LLM 모델 설정
-llm = ChatOpenAI(model="gpt-4o", temperature=0.7)
+llm = _init_llm()
+
+
+class CritiqueItem(BaseModel):
+    """판결 품질 평가 항목을 구조화한 스키마."""
+
+    criteria: Literal["논리적 일관성", "법률적 타당성", "사회적 가치 고려"] = Field(
+        ...,
+        description="평가 기준 이름",
+    )
+    score: Literal[0, 1] = Field(
+        ...,
+        description="기준 충족 여부. 충족 시 1, 미충족 시 0",
+    )
+    reason: str = Field(
+        ...,
+        min_length=1,
+        description="해당 점수를 부여한 이유",
+    )
+
+
+class CritiqueEvaluation(BaseModel):
+    """세 가지 기준에 대한 평가 결과 목록."""
+
+    evaluations: List[CritiqueItem] = Field(
+        ...,
+        min_items=3,
+        description="각 기준별 평가 결과 목록",
+    )
+
+
+CRITIQUE_CRITERIA: List[str] = [
+    "논리적 일관성",
+    "법률적 타당성",
+    "사회적 가치 고려",
+]
 
 
 class CritiqueItem(BaseModel):
