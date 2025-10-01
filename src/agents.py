@@ -278,13 +278,13 @@ critic_prompt_template = """
 - 기준을 충족하면 score에 1, 미충족이면 0을 부여하세요.
 - 그 이유(reason)를 한 문장으로 간결하게 설명해주세요.
 결과는 반드시 하나의 JSON 객체로만 출력해야 하며, 아래 스키마를 따라야 합니다.
-{
+{{
     "evaluations": [
-        {"criteria": "논리적 일관성", "score": 0 또는 1, "reason": "..."},
-        {"criteria": "법률적 타당성", "score": 0 또는 1, "reason": "..."},
-        {"criteria": "사회적 가치 고려", "score": 0 또는 1, "reason": "..."}
+        {{"criteria": "논리적 일관성", "score": 0 또는 1, "reason": "..."}},
+        {{"criteria": "법률적 타당성", "score": 0 또는 1, "reason": "..."}},
+        {{"criteria": "사회적 가치 고려", "score": 0 또는 1, "reason": "..."}}
     ]
-}
+}}
 # 평가 기준
 1.  **논리적 일관성 (Logical Consistency)**: 변호사들의 주장과 최종 판결의 논리가 일관되는가?
 2.  **법률적 타당성 (Legal Validity)**: 판결이 법률 원칙과 상식적인 법 감정에 부합하는가?

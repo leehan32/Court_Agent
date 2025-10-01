@@ -13,7 +13,7 @@ from rich.table import Table
 import src.console as console
 from src.agents import CRITIQUE_CRITERIA, redis_client
 from src.graph import app
-from src.vector_db import vector_store
+from src.vector_db import ensure_collection, vector_store
 
 CRITERIA_HEADERS: Dict[str, Tuple[str, str]] = {
     "논리적 일관성": ("logical_consistency_score", "logical_consistency_reason"),
@@ -33,6 +33,7 @@ def run_benchmark(test_filepath: str, is_trained: bool):
         console.console.print("🔴 Redis DB가 초기화되었습니다.")
         try:
             vector_store.delete_collection()
+            ensure_collection()
             console.console.print("🔴 PostgreSQL 벡터 DB가 초기화되었습니다.")
         except Exception as e:
             console.console.print(f"🟡 PostgreSQL 벡터 DB 초기화 중 참고: {e}")
