@@ -36,10 +36,32 @@ vector_store = PGVector(
     use_jsonb=True,
 )
 
+
+def _is_existing_collection_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return "already exists" in message or "duplicate" in message
+
+
+try:
+    vector_store.create_collection()
+except Exception as e:
+    if not _is_existing_collection_error(e):
+        raise
+
+
+def ensure_collection():
+    try:
+        vector_store.create_collection()
+    except Exception as e:
+        if _is_existing_collection_error(e):
+            return
+        raise
+
 def add_case_to_db(case_summary: str, verdict: str, plaintiff_lesson: str, defendant_lesson: str):
     """
     재판이 끝난 사건의 요약과 결과를 PostgreSQL DB에 추가합니다.
     """
+    ensure_collection()
     doc = Document(
         page_content=case_summary,
         metadata={
