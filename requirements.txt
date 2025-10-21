@@ -1,0 +1,17 @@
+langchain
+langchain-community
+langgraph
+langchain_openai
+redis
+rich
+sentence-transformers
+psycopg2-binary
+langchain-postgres
+python-dotenv
+langchain-smith
+
+# --- 데모용 추가 라이브러리 ---
+streamlit
+pyhwp # HWP 파일 파서
+python-docx # DOCX 파일 파서
+PyMuPDF # PDF 파일 파서
