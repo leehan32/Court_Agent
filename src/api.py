@@ -5,7 +5,16 @@ import io
 from contextlib import closing
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -46,6 +55,116 @@ async def get_request_context(request: Request) -> RequestContext:
 
 
 app = FastAPI(title="Court Agent API", version="0.1.0")
+
+
+class BackgroundWorkflowTracker(ProcessingJobLogger):
+    """Tracker that reuses an existing workflow job entry."""
+
+    def __init__(
+        self,
+        conn,
+        firm_id: int,
+        user_id: int,
+        *,
+        workflow_job_id: Optional[int] = None,
+    ) -> None:
+        super().__init__(conn, firm_id, user_id)
+        self._workflow_job_id = workflow_job_id
+
+    def start_step(
+        self,
+        step: str,
+        *,
+        doc_id: Optional[int] = None,
+        status: str = "running",
+        detail: Optional[dict] = None,
+    ) -> int:
+        if step == "workflow" and self._workflow_job_id is not None:
+            job_id = self._workflow_job_id
+            self._update_job(job_id, status, detail=detail, doc_id=doc_id)
+            if job_id not in self._started_jobs:
+                self._started_jobs.append(job_id)
+            self._workflow_job_id = None
+            return job_id
+        return super().start_step(
+            step,
+            doc_id=doc_id,
+            status=status,
+            detail=detail,
+        )
+
+
+def _run_workflow_pipeline_task(
+    *,
+    workflow_job_id: int,
+    upload_job_id: int,
+    firm_id: int,
+    user_id: int,
+    file_bytes: bytes,
+    file_name: str,
+    mime_type: Optional[str],
+    enable_ocr: bool,
+    include_simulation: bool,
+) -> None:
+    conn = None
+    tracker: Optional[BackgroundWorkflowTracker] = None
+    try:
+        conn = get_db_connection()
+        set_rls_user(conn, firm_id)
+        tracker = BackgroundWorkflowTracker(
+            conn,
+            firm_id,
+            user_id,
+            workflow_job_id=workflow_job_id,
+        )
+        try:
+            result = ingest_and_run_pipeline(
+                conn,
+                firm_id=firm_id,
+                user_id=user_id,
+                file_bytes=file_bytes,
+                file_name=file_name,
+                mime_type=mime_type,
+                enable_ocr=enable_ocr,
+                include_simulation=include_simulation,
+                tracker=tracker,
+            )
+        except Exception as exc:
+            tracker.fail_step(upload_job_id, detail={"error": str(exc)})
+            tracker.cancel_pending()
+            return
+
+        stored = result["stored"]
+        tracker.succeed_step(
+            upload_job_id,
+            detail={"bytes": len(file_bytes)},
+            doc_id=stored.doc_id,
+        )
+    except Exception as exc:  # pragma: no cover - defensive guard
+        if tracker is not None:
+            tracker.fail_step(upload_job_id, detail={"error": str(exc)})
+            tracker.cancel_pending()
+        else:
+            try:
+                fallback_conn = get_db_connection()
+                try:
+                    set_rls_user(fallback_conn, firm_id)
+                    fallback_tracker = ProcessingJobLogger(
+                        fallback_conn, firm_id, user_id
+                    )
+                    fallback_tracker.fail_step(
+                        upload_job_id, detail={"error": str(exc)}
+                    )
+                    fallback_tracker.fail_step(
+                        workflow_job_id, detail={"error": str(exc)}
+                    )
+                finally:
+                    fallback_conn.close()
+            except Exception:  # pragma: no cover - best effort logging
+                pass
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _open_connection(context: RequestContext):
@@ -115,6 +234,7 @@ async def upload_document(
 
 @app.post("/workflow")
 async def upload_and_generate_workflow(
+    background_tasks: BackgroundTasks,
     context: RequestContext = Depends(get_request_context),
     file: UploadFile = File(...),
     enable_ocr: bool = Form(False),
@@ -135,57 +255,31 @@ async def upload_and_generate_workflow(
         },
     )
 
-    try:
-        result = ingest_and_run_pipeline(
-            conn,
-            firm_id=context.firm_id,
-            user_id=context.user_id,
-            file_bytes=file_bytes,
-            file_name=file.filename or "uploaded",
-            mime_type=file.content_type,
-            enable_ocr=enable_ocr,
-            include_simulation=include_simulation,
-            tracker=tracker,
-        )
-    except ValueError as exc:
-        tracker.fail_step(upload_job_id, detail={"error": str(exc)})
-        tracker.cancel_pending()
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    except NotImplementedError as exc:
-        tracker.fail_step(upload_job_id, detail={"error": str(exc)})
-        tracker.cancel_pending()
-        raise HTTPException(status_code=501, detail=str(exc))
-    except Exception as exc:  # pragma: no cover - defensive guard
-        tracker.fail_step(upload_job_id, detail={"error": str(exc)})
-        tracker.cancel_pending()
-        raise HTTPException(status_code=500, detail="문서를 처리하는 중 오류가 발생했습니다.") from exc
-    else:
-        stored = result["stored"]
-        tracker.succeed_step(
-            upload_job_id,
-            detail={"bytes": len(file_bytes)},
-            doc_id=stored.doc_id,
-        )
-        jobs = tracker.list_jobs_for_doc(stored.doc_id)
-        state = result["state"]
-        overview = result["overview"]
-        return {
-            "doc_id": overview["doc_id"],
-            "revision_id": stored.revision_id,
-            "title": overview["title"],
-            "page_count": overview["page_count"],
-            "pii_flag": overview["pii_flag"],
-            "summary": state.get("summary"),
-            "issues": state.get("issues", []),
-            "rag_results": state.get("rag_results", []),
-            "draft_text": state.get("draft_text"),
-            "simulation_report": state.get("simulation_report"),
-            "jobs": jobs,
-            "workflow_job_id": result["workflow_job_id"],
-            "draft_job_id": result["draft_job_id"],
-        }
-    finally:
-        conn.close()
+    workflow_job_id = tracker.start_step(
+        "workflow",
+        status="queued",
+        detail={
+            "file_name": file.filename or "uploaded",
+            "include_simulation": include_simulation,
+        },
+    )
+
+    conn.close()
+
+    background_tasks.add_task(
+        _run_workflow_pipeline_task,
+        workflow_job_id=workflow_job_id,
+        upload_job_id=upload_job_id,
+        firm_id=context.firm_id,
+        user_id=context.user_id,
+        file_bytes=file_bytes,
+        file_name=file.filename or "uploaded",
+        mime_type=file.content_type,
+        enable_ocr=enable_ocr,
+        include_simulation=include_simulation,
+    )
+
+    return JSONResponse(status_code=202, content={"job_id": workflow_job_id})
 
 
 @app.get("/parse/{doc_id}")
