@@ -24,7 +24,7 @@ try:  # Optional dependency for HWP parsing
 except ImportError:  # pragma: no cover - optional dependency guard
     pyhwp = None
 
-from .db_utils import get_db_connection, set_rls_user
+from .db_utils import ProcessingJobLogger, get_db_connection, set_rls_user
 
 # Module-level logger reserved for future debugging hooks (not used directly yet).
 logger = logging.getLogger(__name__)
@@ -171,6 +171,8 @@ def store_document(
     user_id: int,
     title: str,
     parsed: ParsedDocument,
+    *,
+    tracker: Optional[ProcessingJobLogger] = None,
 ) -> StoredDocument:
     """Persist the parsed document and its embeddings into PostgreSQL."""
 
@@ -211,39 +213,80 @@ def store_document(
         rev_id = cur.fetchone()[0]
 
         chunk_ids: List[int] = []
-        for chunk in parsed.chunks:
-            cur.execute(
-                """
-                INSERT INTO doc_chunk (doc_id, rev_id, position, page_from, page_to, heading, text)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                RETURNING chunk_id
-                """,
-                (
-                    doc_id,
-                    rev_id,
-                    chunk.position,
-                    chunk.page_from,
-                    chunk.page_to,
-                    chunk.heading,
-                    chunk.text,
-                ),
+        chunk_job_id = None
+        if tracker:
+            chunk_job_id = tracker.start_step(
+                "chunk",
+                doc_id=doc_id,
+                detail={"chunk_count": len(parsed.chunks)},
             )
-            chunk_id = cur.fetchone()[0]
-            chunk_ids.append(chunk_id)
+        try:
+            for chunk in parsed.chunks:
+                cur.execute(
+                    """
+                    INSERT INTO doc_chunk (doc_id, rev_id, position, page_from, page_to, heading, text)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING chunk_id
+                    """,
+                    (
+                        doc_id,
+                        rev_id,
+                        chunk.position,
+                        chunk.page_from,
+                        chunk.page_to,
+                        chunk.heading,
+                        chunk.text,
+                    ),
+                )
+                chunk_id = cur.fetchone()[0]
+                chunk_ids.append(chunk_id)
+        except Exception as exc:
+            if tracker and chunk_job_id is not None:
+                tracker.fail_step(
+                    chunk_job_id,
+                    detail={"error": str(exc)},
+                )
+            raise
+
+        if tracker and chunk_job_id is not None:
+            tracker.succeed_step(
+                chunk_job_id,
+                detail={"chunk_count": len(chunk_ids)},
+                doc_id=doc_id,
+            )
 
         embeddings = _embeddings.embed_documents([chunk.text for chunk in parsed.chunks])
-        for chunk_id, embedding_vector in zip(chunk_ids, embeddings):
-            cur.execute(
-                """
-                INSERT INTO doc_chunk_embedding (chunk_id, model_name, dim, embedding)
-                VALUES (%s, %s, %s, %s)
-                """,
-                (
-                    chunk_id,
-                    EMBEDDING_MODEL,
-                    EMBEDDING_DIM,
-                    embedding_vector,
-                ),
+        embed_job_id = None
+        if tracker:
+            embed_job_id = tracker.start_step(
+                "embed",
+                doc_id=doc_id,
+                detail={"model": EMBEDDING_MODEL, "chunk_count": len(chunk_ids)},
+            )
+        try:
+            for chunk_id, embedding_vector in zip(chunk_ids, embeddings):
+                cur.execute(
+                    """
+                    INSERT INTO doc_chunk_embedding (chunk_id, model_name, dim, embedding)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (
+                        chunk_id,
+                        EMBEDDING_MODEL,
+                        EMBEDDING_DIM,
+                        embedding_vector,
+                    ),
+                )
+        except Exception as exc:
+            if tracker and embed_job_id is not None:
+                tracker.fail_step(embed_job_id, detail={"error": str(exc)})
+            raise
+
+        if tracker and embed_job_id is not None:
+            tracker.succeed_step(
+                embed_job_id,
+                detail={"model": EMBEDDING_MODEL, "chunk_count": len(chunk_ids)},
+                doc_id=doc_id,
             )
 
         cur.execute(
@@ -267,10 +310,38 @@ def ingest_document(
     mime_type: Optional[str] = None,
     enable_ocr: bool = False,
     conn=None,
+    *,
+    tracker: Optional[ProcessingJobLogger] = None,
 ) -> Tuple[ParsedDocument, StoredDocument]:
     """High level helper used by LangGraph nodes to ingest a document."""
 
-    parsed = parse_document(file_bytes=file_bytes, file_name=file_name, mime_type=mime_type, enable_ocr=enable_ocr)
+    parse_job_id = None
+    if tracker:
+        parse_job_id = tracker.start_step(
+            "parse",
+            detail={"file_name": file_name, "enable_ocr": enable_ocr},
+        )
+    try:
+        parsed = parse_document(
+            file_bytes=file_bytes,
+            file_name=file_name,
+            mime_type=mime_type,
+            enable_ocr=enable_ocr,
+        )
+    except Exception as exc:
+        if tracker and parse_job_id is not None:
+            tracker.fail_step(parse_job_id, detail={"error": str(exc)})
+        raise
+    if tracker and parse_job_id is not None:
+        tracker.succeed_step(
+            parse_job_id,
+            detail={
+                "file_name": file_name,
+                "page_count": parsed.page_count,
+                "chunk_count": len(parsed.chunks),
+                "pii_flag": parsed.pii_flag,
+            },
+        )
     close_conn = False
     if conn is None:
         conn = get_db_connection()
@@ -278,7 +349,14 @@ def ingest_document(
 
     try:
         set_rls_user(conn, firm_id)
-        stored = store_document(conn, firm_id, user_id, title=file_name, parsed=parsed)
+        stored = store_document(
+            conn,
+            firm_id,
+            user_id,
+            title=file_name,
+            parsed=parsed,
+            tracker=tracker,
+        )
     finally:
         if close_conn:
             conn.close()
