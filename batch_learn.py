@@ -11,6 +11,8 @@ from typing import Iterable, List
 from rich import print
 from rich.progress import track
 
+from pgvector.utils import Vector
+
 from src.db_utils import get_db_connection
 from src.file_processor import EMBEDDING_DIM, EMBEDDING_MODEL
 from langchain_community.embeddings import SentenceTransformerEmbeddings
@@ -88,7 +90,7 @@ def ingest_precedents(cases: Iterable[dict]) -> None:
                             section_id,
                             EMBEDDING_MODEL,
                             EMBEDDING_DIM,
-                            vectors[idx],
+                            Vector(vectors[idx]),
                         ),
                     )
         conn.commit()

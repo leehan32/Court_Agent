@@ -6,18 +6,21 @@ import os
 from typing import Any, Dict, List, Optional
 
 import psycopg2
+from pgvector.psycopg2 import register_vector
 
 
 def get_db_connection():
     """Create a new PostgreSQL connection using environment variables."""
 
-    return psycopg2.connect(
+    conn = psycopg2.connect(
         host=os.getenv("POSTGRES_HOST", "localhost"),
         database=os.getenv("POSTGRES_DB", "legal_db"),
         user=os.getenv("POSTGRES_USER", "user"),
         password=os.getenv("POSTGRES_PASSWORD", "password"),
         port=os.getenv("POSTGRES_PORT", 5432),
     )
+    register_vector(conn)
+    return conn
 
 
 def set_rls_user(conn, firm_id: int) -> None:
