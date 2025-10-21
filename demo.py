@@ -1,12 +1,14 @@
 # 파일명: demo.py (프로젝트 최상위 폴더에 생성)
 import streamlit as st
-import os
 from dotenv import load_dotenv
 from src.db_utils import get_db_connection, set_rls_user
-from src.file_processor import process_and_embed_file, EMBEDDING_DIM
-from src.vector_db import search_private_chunks, search_public_statutes
+from src.file_processor import EMBEDDING_DIM, ingest_document
+from src.vector_db import (
+    search_private_chunks,
+    search_public_precedents,
+    search_public_statutes,
+)
 from src.llm_client import get_rag_answer
-import psycopg2
 
 # .env 파일 로드 (OPENAI_API_KEY, DB 접속 정보 등)
 load_dotenv()
@@ -70,19 +72,25 @@ if uploaded_file:
     if st.button(f"'{uploaded_file.name}' 처리 및 임베딩"):
         with st.spinner("파일을 파싱하고 임베딩하여 '전용 DB'에 저장 중입니다... (시간이 걸릴 수 있습니다)"):
             try:
-                doc_id, chunk_count = process_and_embed_file(
-                    st.session_state.conn,
-                    st.session_state.firm_id,
-                    st.session_state.user_id,
-                    uploaded_file
+                parsed, stored = ingest_document(
+                    firm_id=st.session_state.firm_id,
+                    user_id=st.session_state.user_id,
+                    file_bytes=uploaded_file.getvalue(),
+                    file_name=uploaded_file.name,
+                    mime_type=uploaded_file.type,
+                    conn=st.session_state.conn,
                 )
-                st.success(f"파일 처리 완료! (문서 ID: {doc_id}, 청크 수: {chunk_count})")
+                st.success(
+                    f"파일 처리 완료! (문서 ID: {stored.doc_id}, 청크 수: {len(parsed.chunks)})"
+                )
             except Exception as e:
                 st.error(f"파일 처리 중 오류 발생: {e}")
 
 # --- 3. RAG 기반 질의응답 ---
 st.header("2. RAG 기반 질의응답")
-st.info(f"업로드한 '전용 문서'와 '공용 법령'을 모두 검색하여 답변합니다. (임베딩 차원: {EMBEDDING_DIM})")
+st.info(
+    f"업로드한 '전용 문서'와 '공용 법령/판례'를 모두 검색하여 답변합니다. (임베딩 차원: {EMBEDDING_DIM})"
+)
 
 query = st.text_input("질문:", placeholder="업로드한 문서의 내용을 요약해줘")
 
@@ -91,9 +99,10 @@ if query:
         try:
             # RAG 검색 (전용 DB + 공용 DB)
             private_results = search_private_chunks(st.session_state.conn, query, top_k=3)
-            public_results = search_public_statutes(st.session_state.conn, query, top_k=2)
-            
-            context_chunks = private_results + public_results
+            statute_results = search_public_statutes(st.session_state.conn, query, top_k=2)
+            precedent_results = search_public_precedents(st.session_state.conn, query, top_k=2)
+
+            context_chunks = private_results + statute_results + precedent_results
             
             if not context_chunks:
                 st.warning("관련된 참고 자료를 찾지 못했습니다. LLM이 부정확하게 답변할 수 있습니다.")

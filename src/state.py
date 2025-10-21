@@ -1,20 +1,48 @@
-from typing import List, TypedDict, Optional
+"""Application state definitions for the B2B legal assistant."""
+from __future__ import annotations
 
-class AgentSpeech(TypedDict):
-    """에이전트의 발언을 저장하는 형식"""
-    agent_name: str
-    speech: str
+from typing import List, Optional, TypedDict
 
-class TrialState(TypedDict):
-    """재판 전체의 상태를 관리하는 형식"""
-    case_file: str
-    plaintiff_lawyer: str
-    defendant_lawyer: str
-    selected_judges: List[dict]
-    debate_transcript: List[AgentSpeech]
-    turn_count: int
-    max_turns: int
-    associate_judge_verdicts: List[AgentSpeech]
-    final_verdict: Optional[str]
-    plaintiff_outcome: Optional[str]
-    critique_scores: Optional[list]  # 👈 벤치마크 점수를 저장할 필드
+
+class RetrievedChunk(TypedDict, total=False):
+    """Representation of a retrieved text chunk that can be surfaced to the LLM."""
+
+    text: str
+    source: str
+    chunk_id: Optional[int]
+
+
+class AssistantState(TypedDict, total=False):
+    """Workflow state shared between LangGraph nodes."""
+
+    # Session context
+    firm_id: int
+    user_id: int
+    file_name: str
+    mime_type: Optional[str]
+    file_bytes: bytes
+    enable_ocr: bool
+
+    # Ingestion output
+    raw_text: str
+    doc_id: Optional[int]
+    revision_id: Optional[int]
+    chunk_ids: List[int]
+    pii_flag: bool
+
+    # Analytical artefacts
+    summary: str
+    issues: List[str]
+    rag_results: List[RetrievedChunk]
+    reference_analysis: str
+    draft_text: str
+    simulation_report: str
+
+    # Optional feedback payload coming from the UI layer
+    user_feedback: Optional[str]
+    feedback_reason: Optional[str]
+    feedback_label: Optional[str]
+    feedback_saved: bool
+
+    # Export hooks
+    export_path: Optional[str]
