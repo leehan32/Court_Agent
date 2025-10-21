@@ -39,7 +39,9 @@ cd [레포지토리 폴더]
 # .env.example 파일을 복사하여 .env 파일을 만듭니다.
 cp .env.example .env
 
-# 3. .env 파일을 열어 YOUR_API_KEY 부분을 실제 OpenAI API 키로 교체합니다.
+# 3. .env 파일을 열어 사용할 LLM 제공자를 설정합니다.
+#    - `LLM_PROVIDER=openai`로 설정하고 `OPENAI_API_KEY`를 채우면 OpenAI 모델을 사용합니다.
+#    - `LLM_PROVIDER=nvidia`로 설정하고 `NVIDIA_API_KEY` (및 필요 시 `NVIDIA_MODEL`)를 채우면 NVIDIA AI Endpoints를 사용합니다.
 # (선택) LangSmith 추적을 원하면 해당 부분의 주석을 해제하고 정보를 입력합니다.
 
 # 4. 필요한 파이썬 라이브러리를 설치합니다.
