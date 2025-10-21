@@ -13,6 +13,7 @@ from typing import List, Optional, Tuple
 import fitz  # PyMuPDF
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import SentenceTransformerEmbeddings
+from pgvector.utils import Vector
 
 try:  # Optional dependency for DOCX parsing
     import docx  # type: ignore
@@ -274,7 +275,7 @@ def store_document(
                         chunk_id,
                         EMBEDDING_MODEL,
                         EMBEDDING_DIM,
-                        embedding_vector,
+                        Vector(embedding_vector),
                     ),
                 )
         except Exception as exc:
