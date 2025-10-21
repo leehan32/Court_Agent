@@ -222,7 +222,7 @@ CREATE POLICY chunk_firm_isolation ON doc_chunk
 
 DROP POLICY IF EXISTS private_meta_firm_isolation ON private_case_meta;
 CREATE POLICY private_meta_firm_isolation ON private_case_meta
-  USING (firm_id = current_setting('app.firm_id', true)::BIGGINT);
+  USING (firm_id = current_setting('app.firm_id', true)::BIGINT);
 
 DROP POLICY IF EXISTS fb_firm_isolation ON feedback;
 CREATE POLICY fb_firm_isolation ON feedback

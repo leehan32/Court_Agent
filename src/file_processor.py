@@ -1,148 +1,286 @@
-# 파일명: src/file_processor.py (신규)
-import io
-import fitz  # PyMuPDF
-import docx # python-docx
-import hwp # pyhwp
+"""File ingestion helpers for the B2B legal assistant."""
+from __future__ import annotations
+
 import hashlib
-from langchain_community.embeddings import SentenceTransformerEmbeddings
+import io
+import json
+import logging
+import os
+import re
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+
+import fitz  # PyMuPDF
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from .db_utils import get_db_connection
+from langchain_community.embeddings import SentenceTransformerEmbeddings
 
-# 사용할 임베딩 모델 (requirements.txt에 sentence-transformers 필요)
-# all-MiniLM-L6-v2는 384 차원입니다.
-EMBEDDING_MODEL = "all-MiniLM-L6-v2" 
-EMBEDDING_DIM = 384
-# !!주의!!: init.sql의 모든 VECTOR(1024)를 VECTOR(384)로 수정해야 합니다.
+try:  # Optional dependency for DOCX parsing
+    import docx  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency guard
+    docx = None
 
-embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
+try:  # Optional dependency for HWP parsing
+    import pyhwp  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency guard
+    pyhwp = None
 
-def get_text_splitter():
-    return RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=100,
-        length_function=len,
+from .db_utils import get_db_connection, set_rls_user
+
+# Module-level logger reserved for future debugging hooks (not used directly yet).
+logger = logging.getLogger(__name__)
+
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
+
+_embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
+_text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=int(os.getenv("CHUNK_SIZE", "1000")),
+    chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "120")),
+    length_function=len,
+)
+
+
+@dataclass
+class ParsedChunk:
+    text: str
+    position: int
+    page_from: Optional[int] = None
+    page_to: Optional[int] = None
+    heading: Optional[str] = None
+
+
+@dataclass
+class ParsedDocument:
+    text: str
+    file_ext: str
+    mime_type: Optional[str]
+    page_count: int
+    byte_size: int
+    sha256: str
+    pii_flag: bool
+    chunks: List[ParsedChunk]
+    ocr_used: bool = False
+    ocr_engine: Optional[str] = None
+
+
+@dataclass
+class StoredDocument:
+    doc_id: int
+    revision_id: int
+    chunk_ids: List[int]
+    pii_flag: bool
+
+
+HANGUL_ID_PATTERN = re.compile(r"\b\d{6}-?[1-4]\d{6}\b")
+PHONE_PATTERN = re.compile(r"\b01[0-9]-?\d{3,4}-?\d{4}\b")
+ACCOUNT_PATTERN = re.compile(r"\b\d{2,4}-\d{2,4}-\d{2,6}\b")
+
+
+def _detect_pii(text: str) -> bool:
+    return bool(
+        HANGUL_ID_PATTERN.search(text)
+        or PHONE_PATTERN.search(text)
+        or ACCOUNT_PATTERN.search(text)
     )
 
-def parse_file(file_content, file_name, mime_type):
-    """파일 내용과 MIME 타입을 기반으로 텍스트를 추출합니다."""
-    text = ""
-    page_count = 0
-    file_ext = file_name.split('.')[-1].lower()
 
-    if file_ext == 'pdf':
-        with fitz.open(stream=file_content, filetype="pdf") as doc:
-            text = "".join(page.get_text() for page in doc)
-            page_count = doc.page_count
-    elif file_ext == 'docx':
-        doc = docx.Document(io.BytesIO(file_content))
-        text = "\n".join([para.text for para in doc.paragraphs])
-        page_count = 1 # docx는 페이지 계산이 복잡하므로 데모에선 1로 통일
-    elif file_ext == 'hwp':
-        # pyhwp는 BytesIO를 직접 지원하지 않을 수 있습니다. 
-        # 데모를 위해 임시 파일 저장이 필요할 수 있으나, BytesIO를 먼저 시도합니다.
-        try:
-            # pyhwp 사용 시 임시 파일 저장이 더 안정적일 수 있습니다.
-            # with open("temp.hwp", "wb") as f:
-            #     f.write(file_content)
-            # hwp_doc = hwp.open("temp.hwp")
-            # text = hwp_doc.get_text()
-            # os.remove("temp.hwp")
-            
-            hwp_doc = hwp.open(io.BytesIO(file_content))
-            text = hwp_doc.get_text()
-            page_count = 1 # hwp도 페이지 계산이 복잡
-        except Exception as e:
-            print(f"HWP 파싱 오류 (pyhwp는 파일 경로/임시 파일 저장이 필요할 수 있음): {e}")
-            text = "" # 오류 시 빈 텍스트 반환
-            
-    elif file_ext == 'txt':
-        try:
-            text = file_content.decode('utf-8')
-        except UnicodeDecodeError:
-            text = file_content.decode('euc-kr', errors='ignore') # 한글 깨짐 방지
-        page_count = 1
-        
-    # TODO: 스캔된 PDF/이미지의 경우 Naver OCR API 호출 로직 추가
+def _extract_pdf_text(file_bytes: bytes) -> Tuple[str, int]:
+    with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+        pages = [page.get_text("text") for page in doc]
+        text = "\n".join(page.strip() for page in pages if page.strip())
+        return text, doc.page_count
 
-    return text, page_count, file_ext
 
-def process_and_embed_file(conn, firm_id, user_id, uploaded_file):
-    """
-    Streamlit의 UploadedFile 객체를 받아 파싱, 청킹, 임베딩, DB 저장을 수행합니다.
-    데모용으로 모든 작업을 동기식으로 처리합니다.
-    """
-    
-    file_content = uploaded_file.getvalue()
-    file_name = uploaded_file.name
-    mime_type = uploaded_file.type
-    
-    # 1. 파일 파싱
-    text, page_count, file_ext = parse_file(file_content, file_name, mime_type)
-    if not text:
-        raise ValueError("파일에서 텍스트를 추출할 수 없습니다. (HWP 파싱 오류 또는 빈 파일)")
+def _extract_docx_text(file_bytes: bytes) -> Tuple[str, int]:
+    if docx is None:  # pragma: no cover - optional dependency guard
+        raise RuntimeError("python-docx가 설치되어 있지 않습니다. requirements.txt를 확인하세요.")
 
-    # 2. 문서(Document) 레코드 생성
-    sha256 = hashlib.sha256(file_content).hexdigest()
-    bytes_size = len(file_content)
-    
+    document = docx.Document(io.BytesIO(file_bytes))
+    paragraphs = [para.text.strip() for para in document.paragraphs if para.text.strip()]
+    return "\n".join(paragraphs), max(1, len(paragraphs) // 40)
+
+
+def _extract_hwp_text(file_bytes: bytes) -> Tuple[str, int]:  # pragma: no cover - hwp files are rare in CI
+    if pyhwp is None:
+        raise RuntimeError("pyhwp 라이브러리가 설치되어 있지 않습니다. HWP 파일 처리를 위해 설치해주세요.")
+
+    # pyhwp는 파일 경로를 선호하기 때문에 임시 파일을 사용합니다.
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".hwp") as tmp:
+        tmp.write(file_bytes)
+        tmp.flush()
+        doc = pyhwp.HWPDocument(tmp.name)  # type: ignore[attr-defined]
+        sections = []
+        for section in doc.bodytext.section_list:  # type: ignore[attr-defined]
+            for paragraph in section.paragraph_list:  # type: ignore[attr-defined]
+                text = "".join(text.text for text in paragraph.text)  # type: ignore[attr-defined]
+                if text.strip():
+                    sections.append(text.strip())
+        return "\n".join(sections), max(1, len(sections) // 40)
+
+
+def parse_document(
+    file_bytes: bytes,
+    file_name: str,
+    mime_type: Optional[str] = None,
+    enable_ocr: bool = False,
+) -> ParsedDocument:
+    """Parse an uploaded document and return structured text chunks."""
+
+    file_ext = file_name.split(".")[-1].lower()
+    if file_ext == "pdf":
+        text, page_count = _extract_pdf_text(file_bytes)
+    elif file_ext == "docx":
+        text, page_count = _extract_docx_text(file_bytes)
+    elif file_ext == "hwp":
+        text, page_count = _extract_hwp_text(file_bytes)
+    elif file_ext == "txt":
+        text = file_bytes.decode("utf-8", errors="ignore")
+        page_count = max(1, len(text) // 2000)
+    else:
+        raise ValueError(f"지원하지 않는 파일 형식입니다: {file_ext}")
+
+    if not text.strip():
+        if enable_ocr:
+            raise NotImplementedError("OCR 엔진 연동이 아직 구현되지 않았습니다.")
+        raise ValueError("문서에서 텍스트를 추출할 수 없습니다. OCR 설정을 확인하세요.")
+
+    chunks: List[ParsedChunk] = []
+    for idx, chunk_text in enumerate(_text_splitter.split_text(text)):
+        chunks.append(ParsedChunk(text=chunk_text, position=idx))
+
+    sha256 = hashlib.sha256(file_bytes).hexdigest()
+    pii_flag = _detect_pii(text)
+
+    return ParsedDocument(
+        text=text,
+        file_ext=file_ext,
+        mime_type=mime_type,
+        page_count=page_count,
+        byte_size=len(file_bytes),
+        sha256=sha256,
+        pii_flag=pii_flag,
+        chunks=chunks,
+    )
+
+
+def store_document(
+    conn,
+    firm_id: int,
+    user_id: int,
+    title: str,
+    parsed: ParsedDocument,
+) -> StoredDocument:
+    """Persist the parsed document and its embeddings into PostgreSQL."""
+
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO document (firm_id, user_id, title, source_type, mime_type, file_ext, sha256, bytes, page_count)
-            VALUES (%s, %s, %s, 'upload', %s, %s, %s, %s, %s)
+            INSERT INTO document (firm_id, user_id, title, source_type, mime_type, file_ext, sha256, bytes, page_count, pii_flag)
+            VALUES (%s, %s, %s, 'upload', %s, %s, %s, %s, %s, %s)
             RETURNING doc_id
             """,
-            (firm_id, user_id, file_name, mime_type, file_ext, sha256, bytes_size, page_count)
+            (
+                firm_id,
+                user_id,
+                title,
+                parsed.mime_type,
+                parsed.file_ext,
+                parsed.sha256,
+                parsed.byte_size,
+                parsed.page_count,
+                parsed.pii_flag,
+            ),
         )
         doc_id = cur.fetchone()[0]
-        
-        # 데모용: 간단한 리비전 생성
+
         cur.execute(
             """
-            INSERT INTO document_revision (doc_id, revision_no, ocr_used)
-            VALUES (%s, 1, false) RETURNING rev_id
+            INSERT INTO document_revision (doc_id, revision_no, ocr_used, ocr_engine, parse_log)
+            VALUES (%s, 1, %s, %s, %s)
+            RETURNING rev_id
             """,
-            (doc_id,)
+            (
+                doc_id,
+                parsed.ocr_used,
+                parsed.ocr_engine,
+                json.dumps({"chunk_count": len(parsed.chunks)}),
+            ),
         )
         rev_id = cur.fetchone()[0]
 
-        # 3. 청킹
-        text_splitter = get_text_splitter()
-        chunks = text_splitter.split_text(text)
-        
-        chunk_ids = []
-        for i, chunk_text in enumerate(chunks):
+        chunk_ids: List[int] = []
+        for chunk in parsed.chunks:
             cur.execute(
                 """
-                INSERT INTO doc_chunk (doc_id, rev_id, position, text)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO doc_chunk (doc_id, rev_id, position, page_from, page_to, heading, text)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING chunk_id
                 """,
-                (doc_id, rev_id, i, chunk_text)
+                (
+                    doc_id,
+                    rev_id,
+                    chunk.position,
+                    chunk.page_from,
+                    chunk.page_to,
+                    chunk.heading,
+                    chunk.text,
+                ),
             )
-            chunk_ids.append(cur.fetchone()[0])
+            chunk_id = cur.fetchone()[0]
+            chunk_ids.append(chunk_id)
 
-        # 4. 임베딩
-        chunk_embeddings = embeddings.embed_documents(chunks)
-        
-        for chunk_id, embedding_vector in zip(chunk_ids, chunk_embeddings):
-            # 참고: pgvector는 list를 받습니다.
+        embeddings = _embeddings.embed_documents([chunk.text for chunk in parsed.chunks])
+        for chunk_id, embedding_vector in zip(chunk_ids, embeddings):
             cur.execute(
                 """
                 INSERT INTO doc_chunk_embedding (chunk_id, model_name, dim, embedding)
                 VALUES (%s, %s, %s, %s)
                 """,
-                (chunk_id, EMBEDDING_MODEL, EMBEDDING_DIM, embedding_vector)
+                (
+                    chunk_id,
+                    EMBEDDING_MODEL,
+                    EMBEDDING_DIM,
+                    embedding_vector,
+                ),
             )
-            
-        # 5. 개인화 메타데이터 생성 (데모용)
+
         cur.execute(
             """
             INSERT INTO private_case_meta (doc_id, firm_id, user_id, case_type, tags)
-            VALUES (%s, %s, %s, '미분류', %s)
+            VALUES (%s, %s, %s, '미분류', ARRAY['자동업로드'])
+            ON CONFLICT (doc_id) DO NOTHING
             """,
-            (doc_id, firm_id, user_id, ['신규업로드'])
+            (doc_id, firm_id, user_id),
         )
-            
+
     conn.commit()
-    return doc_id, len(chunks)
+    return StoredDocument(doc_id=doc_id, revision_id=rev_id, chunk_ids=chunk_ids, pii_flag=parsed.pii_flag)
+
+
+def ingest_document(
+    firm_id: int,
+    user_id: int,
+    file_bytes: bytes,
+    file_name: str,
+    mime_type: Optional[str] = None,
+    enable_ocr: bool = False,
+    conn=None,
+) -> Tuple[ParsedDocument, StoredDocument]:
+    """High level helper used by LangGraph nodes to ingest a document."""
+
+    parsed = parse_document(file_bytes=file_bytes, file_name=file_name, mime_type=mime_type, enable_ocr=enable_ocr)
+    close_conn = False
+    if conn is None:
+        conn = get_db_connection()
+        close_conn = True
+
+    try:
+        set_rls_user(conn, firm_id)
+        stored = store_document(conn, firm_id, user_id, title=file_name, parsed=parsed)
+    finally:
+        if close_conn:
+            conn.close()
+
+    return parsed, stored

@@ -1,11 +1,11 @@
-# 파일명: src/llm_client.py (신규)
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+"""Standalone helper functions for ad-hoc RAG prompts in the demo app."""
+from __future__ import annotations
 
-# 데모를 위해 OpenAI 모델을 사용합니다. (OPENAI_API_KEY 필요)
-# 로컬 모델(Llama 3, SOLAR)을 사용하려면 이 부분을 수정하세요.
-llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+
+from .agents import build_chat_model
+
 
 RAG_PROMPT_TEMPLATE = """
 당신은 변호사를 보조하는 전문 법률 AI 어시스턴트입니다.
@@ -21,18 +21,19 @@ RAG_PROMPT_TEMPLATE = """
 [답변]
 """
 
+
 def get_rag_answer(query, context_chunks):
     """검색된 RAG 청크와 쿼리를 바탕으로 LLM 답변을 생성합니다."""
-    
+
     context_str = "\n\n---\n\n".join(
         f"출처: {chunk['source']}\n내용: {chunk['text']}" for chunk in context_chunks
     )
-    
+
     prompt = ChatPromptTemplate.from_template(RAG_PROMPT_TEMPLATE)
-    chain = prompt | llm | StrOutputParser()
-    
+    chain = prompt | build_chat_model() | StrOutputParser()
+
     response = chain.invoke({
         "context": context_str,
-        "query": query
+        "query": query,
     })
     return response, context_str

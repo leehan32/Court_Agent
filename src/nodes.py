@@ -1,254 +1,214 @@
-import random
-from typing import Any, Dict, Optional
+"""LangGraph nodes implementing the assistant pipeline."""
+from __future__ import annotations
 
-from src.state import TrialState
-import src.console as console
-from src.agents import (
-    redis_client,
-    JUDGE_PERSONALITY_POOL,
-    lawyer_chain,
-    judge_chain,
-    presiding_judge_chain,
-    evaluation_chain,
-    reflection_chain,
-    critic_chain,
-    CRITIQUE_CRITERIA
+import json
+from contextlib import closing
+from typing import List
+
+from langchain_core.messages import BaseMessage
+
+from .agents import (
+    draft_chain,
+    format_references_for_prompt,
+    rag_response_chain,
+    summarize_chain,
+    simulation_chain,
 )
-from src.vector_db import add_case_to_db, search_similar_cases
+from .db_utils import get_db_connection, set_rls_user
+from .file_processor import ingest_document
+from .state import AssistantState, RetrievedChunk
+from .vector_db import (
+    search_private_chunks,
+    search_public_precedents,
+    search_public_statutes,
+)
 
-def start_trial(state: TrialState):
-    """재판 시작: 초기 설정 및 서브 판사 3명 무작위 선택"""
-    console.print_header("모의 법정 시뮬레이션을 시작합니다")
-    state['max_turns'] = 4
-    state['turn_count'] = 0
-    state['debate_transcript'] = []
-    
-    selected_judges = random.sample(JUDGE_PERSONALITY_POOL, 3)
-    state['selected_judges'] = selected_judges
-    
-    console.print_judge_panel(selected_judges)
+
+def _unpack_response(response: BaseMessage | str) -> str:
+    if isinstance(response, str):
+        return response
+    if hasattr(response, "content"):
+        return str(response.content)
+    return str(response)
+
+
+def ingest_node(state: AssistantState) -> AssistantState:
+    """Parse the uploaded file and persist it to the database."""
+
+    required_fields = ["firm_id", "user_id", "file_name", "file_bytes"]
+    for field in required_fields:
+        if field not in state:
+            raise ValueError(f"ingest_node requires '{field}' in the state")
+
+    parsed, stored = ingest_document(
+        firm_id=state["firm_id"],
+        user_id=state["user_id"],
+        file_bytes=state["file_bytes"],
+        file_name=state["file_name"],
+        mime_type=state.get("mime_type"),
+        enable_ocr=state.get("enable_ocr", False),
+    )
+
+    state["raw_text"] = parsed.text
+    state["doc_id"] = stored.doc_id
+    state["revision_id"] = stored.revision_id
+    state["chunk_ids"] = stored.chunk_ids
+    state["pii_flag"] = stored.pii_flag
     return state
 
-def lawyer_debate_node(state: TrialState):
-    """변호사 토론: 유사 사건 검색 및 개인 DB를 바탕으로 변론"""
-    turn = state['turn_count'] + 1
-    console.print_turn_header(turn)
-    
-    transcript_str = "\n".join(
-        [f"{msg['agent_name']}: {msg['speech']}" for msg in state['debate_transcript']]
-    )
 
-    if state['turn_count'] % 2 == 0:
-        speaker_name = state['plaintiff_lawyer']
-        client_type = "원고"
-        db_key_prefix = "plaintiff_lawyer"
-    else:
-        speaker_name = state['defendant_lawyer']
-        client_type = "피고"
-        db_key_prefix = "defendant_lawyer"
-    
-    similar_cases_str = search_similar_cases(state['case_file'])
-    
-    successful_lessons = "\n".join(redis_client.lrange(f"{db_key_prefix}:successful_strategies", 0, -1))
-    failed_lessons = "\n".join(redis_client.lrange(f"{db_key_prefix}:failed_strategies", 0, -1))
-    past_lessons_str = f"성공 전략:\n{successful_lessons}\n\n실패 전략:\n{failed_lessons}"
-    
-    if not successful_lessons and not failed_lessons:
-        past_lessons_str = "아직 재판 경험이 없습니다."
-        
-    response_ai = lawyer_chain.invoke({
-        "client_type": client_type,
-        "case_file": state['case_file'],
-        "transcript": transcript_str,
-        "past_lessons": past_lessons_str,
-        "similar_cases": similar_cases_str
-    })
-    response = response_ai.content
-        
-    console.print_speech(speaker_name, response)
-    state['debate_transcript'].append({"agent_name": speaker_name, "speech": response})
-    state['turn_count'] += 1
-    return state
+def summarize_node(state: AssistantState) -> AssistantState:
+    """Produce an executive summary and extract legal issues."""
 
-def associate_judge_deliberation_node(state: TrialState):
-    """서브 판사 심의: 실제 LLM을 호출하여 페르소나 기반 판결"""
-    console.print_verdict_header("서브 판사 심의")
-    
-    transcript_str = "\n".join(
-        [f"{msg['agent_name']}: {msg['speech']}" for msg in state['debate_transcript']]
-    )
-    
-    verdicts = []
-    for i, judge_info in enumerate(state['selected_judges']):
-        judge_name = judge_info['name']
-        judge_description = judge_info['description']
-        
-        response_ai = judge_chain.invoke({
-            "judge_name": judge_name,
-            "judge_description": judge_description,
-            "transcript": transcript_str
-        })
-        verdict = response_ai.content
-        
-        console.print_speech(judge_name, verdict)
-        verdicts.append({"agent_name": judge_name, "speech": verdict})
-    
-    state['associate_judge_verdicts'] = verdicts
-    return state
+    document_text = state.get("raw_text")
+    if not document_text:
+        raise ValueError("summarize_node requires 'raw_text' in the state")
 
-def final_judgment_node(state: TrialState):
-    """최종 판결: 재판장 LLM이 모든 내용을 종합하여 판결문 생성"""
-    console.print_verdict_header("최종 판결 선고")
-    
-    transcript_str = "\n".join(
-        [f"{msg['agent_name']}: {msg['speech']}" for msg in state['debate_transcript']]
-    )
-    judge_verdicts_str = "\n\n".join(
-        [f"[{msg['agent_name']}의 의견]\n{msg['speech']}" for msg in state['associate_judge_verdicts']]
-    )
-    
-    response_ai = presiding_judge_chain.invoke({
-        "transcript": transcript_str,
-        "judge_verdicts": judge_verdicts_str
-    })
-    final_verdict = response_ai.content
-    
-    console.print_final_verdict(final_verdict)
-    state['final_verdict'] = final_verdict
-    return state
-
-def update_knowledge_base_node(state: TrialState):
-    """변호사 DB 업데이트 및 이번 사건을 벡터 DB에 저장"""
-    console.print_update_header()
-    
-    evaluation_response = evaluation_chain.invoke({"final_verdict": state['final_verdict']})
-    plaintiff_outcome = evaluation_response.content.strip()
-    state['plaintiff_outcome'] = plaintiff_outcome
-    console.console.print(f"분석 결과: 원고측 '{plaintiff_outcome}'\n")
-
-    outcomes = {
-        state['plaintiff_lawyer']: {"outcome": plaintiff_outcome, "db_key_prefix": "plaintiff_lawyer"},
-        state['defendant_lawyer']: {
-            "outcome": "승리" if plaintiff_outcome == "패배" else ("패배" if plaintiff_outcome == "승리" else "무승부"),
-            "db_key_prefix": "defendant_lawyer"
-        }
-    }
-
-    lessons = {}
-    for lawyer_name, info in outcomes.items():
-        outcome = info['outcome']
-        db_key_prefix = info['db_key_prefix']
-        
-        my_speeches = "\n".join(
-            [s['speech'] for s in state['debate_transcript'] if s['agent_name'] == lawyer_name]
-        )
-        
-        reflection_response = reflection_chain.invoke({"outcome": outcome, "my_speeches": my_speeches})
-        lesson = reflection_response.content.strip()
-        lessons[db_key_prefix] = lesson
-        
-        console.print_lesson(lawyer_name, outcome, lesson)
-
-        if outcome == "승리":
-            redis_client.rpush(f"{db_key_prefix}:successful_strategies", lesson)
-        elif outcome == "패배":
-            redis_client.rpush(f"{db_key_prefix}:failed_strategies", lesson)
-
-    add_case_to_db(
-        case_summary=state['case_file'],
-        verdict=state['final_verdict'],
-        plaintiff_lesson=lessons.get("plaintiff_lawyer", "N/A"),
-        defendant_lesson=lessons.get("defendant_lawyer", "N/A")
-    )
-    
-    return state
-
-def critique_node(state: TrialState):
-    """비평가 에이전트가 최종 판결을 평가하고 점수를 State에 기록합니다."""
-    console.print_verdict_header("판결 품질 평가 (벤치마크 점수)")
-
-    transcript_str = "\n".join(
-        [f"{msg['agent_name']}: {msg['speech']}" for msg in state['debate_transcript']]
-    )
-
-    default_scores: Dict[str, Dict[str, Any]] = {
-        criteria: {
-            "criteria": criteria,
-            "score": 0,
-            "reason": "평가가 생성되지 않았습니다.",
-        }
-        for criteria in CRITIQUE_CRITERIA
-    }
-    failure_reason: Optional[str] = None
-    structured_dump: Optional[Dict[str, Any]] = None
+    response = summarize_chain.invoke({"document_text": document_text})
+    payload = _unpack_response(response)
 
     try:
-        critique_response = critic_chain.invoke({
-            "transcript": transcript_str,
-            "final_verdict": state['final_verdict']
-        })
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        issues: List[str] = [line.strip("-• ") for line in payload.splitlines() if line.strip()]
+        state["summary"] = issues[0] if issues else payload
+        state["issues"] = issues[1:] if len(issues) > 1 else issues
+        return state
 
-        if hasattr(critique_response, "model_dump"):
-            structured_dump = critique_response.model_dump()  # type: ignore[assignment]
-            evaluations = structured_dump.get("evaluations", [])
-        elif isinstance(critique_response, dict):
-            structured_dump = critique_response
-            evaluations = structured_dump.get("evaluations", [])
-        else:
-            evaluations = getattr(critique_response, "evaluations", [])
+    state["summary"] = data.get("summary", "")
+    raw_issues = data.get("issues", [])
+    if isinstance(raw_issues, list):
+        state["issues"] = [str(item) for item in raw_issues]
+    elif isinstance(raw_issues, str):
+        state["issues"] = [part.strip() for part in raw_issues.split("\n") if part.strip()]
+    else:
+        state["issues"] = []
+    return state
 
-        if evaluations is None:
-            evaluations = []
 
-        for item in evaluations:
-            if hasattr(item, "model_dump"):
-                item_data = item.model_dump()  # type: ignore[assignment]
-            elif isinstance(item, dict):
-                item_data = item
-            else:
-                item_data = {
-                    "criteria": getattr(item, "criteria", None),
-                    "score": getattr(item, "score", 0),
-                    "reason": getattr(item, "reason", ""),
-                }
+def rag_chain_node(state: AssistantState) -> AssistantState:
+    """Retrieve private and public precedents for the matter."""
 
-            criteria = item_data.get("criteria")
-            if criteria not in default_scores:
-                continue
+    summary = state.get("summary")
+    issues = state.get("issues", [])
+    if not summary:
+        raise ValueError("rag_chain_node requires 'summary' in the state")
 
-            try:
-                score_value = int(item_data.get("score", 0))
-            except (TypeError, ValueError):
-                score_value = 0
+    query = f"{summary}\n\n" + "\n".join(issues)
+    references: List[RetrievedChunk] = []
 
-            reason_text = (item_data.get("reason") or "").strip() or "평가 이유가 제공되지 않았습니다."
-            default_scores[criteria] = {
-                "criteria": criteria,
-                "score": 1 if score_value == 1 else 0,
-                "reason": reason_text,
+    with closing(get_db_connection()) as conn:
+        set_rls_user(conn, state["firm_id"])
+        references.extend(search_private_chunks(conn, query, top_k=5))
+        references.extend(search_public_statutes(conn, query, top_k=3))
+        references.extend(search_public_precedents(conn, query, top_k=3))
+
+    state["rag_results"] = references
+
+    reference_strings = tuple(f"{item['source']} => {item['text']}" for item in references)
+    if reference_strings:
+        response = rag_response_chain.invoke(
+            {
+                "summary": summary,
+                "issues": "\n".join(issues),
+                "references": format_references_for_prompt(reference_strings),
             }
-
-        if structured_dump is not None and len(structured_dump.get("evaluations", [])) < len(CRITIQUE_CRITERIA):
-            console.console.print("\n[bold yellow]일부 평가 항목이 누락되었습니다. 원본 응답을 검토하세요:[/bold yellow]")
-            console.console.print(structured_dump)
-
-    except Exception as error:
-        failure_reason = str(error)
-        console.console.print(f"\n[bold yellow]품질 평가 생성 중 오류:[/bold yellow] {failure_reason}")
-
-    for criteria, info in default_scores.items():
-        if info["reason"] == "평가가 생성되지 않았습니다.":
-            if failure_reason:
-                info["reason"] = f"평가 실패: {failure_reason}"
+        )
+        payload = _unpack_response(response)
+        try:
+            data = json.loads(payload)
+            analysis_items = data.get("analysis", [])
+            if isinstance(analysis_items, list):
+                formatted = []
+                for item in analysis_items:
+                    source = item.get("source", "출처 미상") if isinstance(item, dict) else str(item)
+                    reasoning = item.get("reasoning", "") if isinstance(item, dict) else ""
+                    formatted.append(f"{source}: {reasoning}".strip())
+                state["reference_analysis"] = "\n".join(formatted)
             else:
-                info["reason"] = "LLM이 해당 기준에 대한 평가를 제공하지 않았습니다."
+                state["reference_analysis"] = payload
+        except json.JSONDecodeError:
+            state["reference_analysis"] = payload
+    else:
+        state["reference_analysis"] = "관련 근거를 찾지 못했습니다."
 
-    console.console.print("\n[bold]판결 품질 벤치마크:[/bold]")
-    for item in default_scores.values():
-        result = "[bold green]PASS[/bold green]" if item["score"] == 1 else "[bold red]FAIL[/bold red]"
-        console.console.print(f"- [bold]{item['criteria']}[/bold]: {result}")
-        console.console.print(f"  (평가 이유: {item['reason']})")
+    return state
 
-    state['critique_scores'] = list(default_scores.values())
 
+def drafting_node(state: AssistantState) -> AssistantState:
+    """Generate a first draft using retrieved authorities."""
+
+    summary = state.get("summary", "")
+    issues = state.get("issues", [])
+    reference_analysis = state.get("reference_analysis", "")
+
+    response = draft_chain.invoke(
+        {
+            "summary": summary,
+            "issues": "\n".join(issues),
+            "reference_analysis": reference_analysis,
+        }
+    )
+    state["draft_text"] = _unpack_response(response)
+    return state
+
+
+def simulation_node(state: AssistantState) -> AssistantState:
+    """Simulate counter arguments and risky precedents."""
+
+    draft_text = state.get("draft_text")
+    if not draft_text:
+        raise ValueError("simulation_node requires 'draft_text' in the state")
+
+    response = simulation_chain.invoke({"draft_text": draft_text})
+    payload = _unpack_response(response)
+    try:
+        data = json.loads(payload)
+        counter = data.get("counter_arguments", [])
+        precedents = data.get("risky_precedents", [])
+        lines = ["예상 반론:"]
+        lines.extend(f"- {item}" for item in counter)
+        lines.append("\n불리할 수 있는 판례:")
+        lines.extend(f"- {item}" for item in precedents)
+        state["simulation_report"] = "\n".join(lines)
+    except json.JSONDecodeError:
+        state["simulation_report"] = payload
+    return state
+
+
+def feedback_node(state: AssistantState) -> AssistantState:
+    """Persist user feedback to the feedback table if provided."""
+
+    feedback = state.get("user_feedback")
+    if not feedback:
+        state["feedback_saved"] = False
+        return state
+
+    doc_id = state.get("doc_id")
+    if not doc_id:
+        raise ValueError("feedback_node requires 'doc_id' when user_feedback is provided")
+
+    with closing(get_db_connection()) as conn:
+        set_rls_user(conn, state["firm_id"])
+        chunk_id = state.get("chunk_ids", [None])[0]
+        label = state.get("feedback_label", "revise")
+        reason = state.get("feedback_reason")
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO feedback (firm_id, user_id, doc_id, chunk_id, reason, revised_text, label)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    state["firm_id"],
+                    state["user_id"],
+                    doc_id,
+                    chunk_id,
+                    reason,
+                    feedback,
+                    label,
+                ),
+            )
+        conn.commit()
+    state["feedback_saved"] = True
     return state
