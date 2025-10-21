@@ -29,6 +29,30 @@ def build_chat_model() -> BaseChatModel:
     provider = os.getenv("LLM_PROVIDER", "").strip().lower()
     temperature = float(os.getenv("LLM_TEMPERATURE", "0.2"))
 
+    if provider in {"nvidia", "nvidia-ai"} or (
+        not provider and os.getenv("NVIDIA_API_KEY")
+    ):
+        from langchain_openai import ChatOpenAI
+
+        model_name = os.getenv(
+            "NVIDIA_MODEL", "nvidia/llama-3.1-nemotron-nano-vl-8b-v1"
+        )
+        api_base = os.getenv(
+            "NVIDIA_API_BASE", "https://integrate.api.nvidia.com/v1"
+        )
+        api_key = os.getenv("NVIDIA_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "Set NVIDIA_API_KEY to use the NVIDIA hosted models."
+            )
+
+        return ChatOpenAI(
+            model=model_name,
+            temperature=temperature,
+            openai_api_base=api_base,
+            openai_api_key=api_key,
+        )
+
     if provider == "openai" or (not provider and os.getenv("OPENAI_API_KEY")):
         from langchain_openai import ChatOpenAI
 
