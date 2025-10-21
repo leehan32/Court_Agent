@@ -185,13 +185,16 @@ CREATE TABLE IF NOT EXISTS user_style_hint (
 -- 처리 이력
 CREATE TABLE IF NOT EXISTS processing_job (
   job_id         BIGSERIAL PRIMARY KEY,
+  firm_id        BIGINT REFERENCES firm(firm_id) NOT NULL,
   doc_id         BIGINT REFERENCES document(doc_id),
-  step           TEXT CHECK (step IN ('upload','parse','ocr','chunk','embed','done')),
+  step           TEXT CHECK (step IN ('upload','parse','ocr','chunk','embed','draft','workflow','done')),
   status         TEXT CHECK (status IN ('queued','running','succeeded','failed')) DEFAULT 'queued',
   detail         JSONB,
   created_at     TIMESTAMPTZ DEFAULT now(),
   updated_at     TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE INDEX IF NOT EXISTS idx_processing_job_firm_step ON processing_job(firm_id, step);
 
 CREATE TABLE IF NOT EXISTS ocr_run (
   ocr_id         BIGSERIAL PRIMARY KEY,
@@ -208,6 +211,7 @@ ALTER TABLE document ENABLE ROW LEVEL SECURITY;
 ALTER TABLE doc_chunk ENABLE ROW LEVEL SECURITY;
 ALTER TABLE private_case_meta ENABLE ROW LEVEL SECURITY;
 ALTER TABLE feedback ENABLE ROW LEVEL SECURITY;
+ALTER TABLE processing_job ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS doc_firm_isolation ON document;
 CREATE POLICY doc_firm_isolation ON document
@@ -226,6 +230,10 @@ CREATE POLICY private_meta_firm_isolation ON private_case_meta
 
 DROP POLICY IF EXISTS fb_firm_isolation ON feedback;
 CREATE POLICY fb_firm_isolation ON feedback
+  USING (firm_id = current_setting('app.firm_id', true)::BIGINT);
+
+DROP POLICY IF EXISTS job_firm_isolation ON processing_job;
+CREATE POLICY job_firm_isolation ON processing_job
   USING (firm_id = current_setting('app.firm_id', true)::BIGINT);
 
 
