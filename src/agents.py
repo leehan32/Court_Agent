@@ -23,10 +23,22 @@ __all__ = (
 )
 
 
+SUPPORTED_PROVIDERS = {"", "openai", "nvidia", "nvidia-ai", "ollama"}
+
+
+def _normalise_provider(raw: str) -> str:
+    provider = raw.strip().lower()
+    if provider and provider not in SUPPORTED_PROVIDERS:
+        raise RuntimeError(
+            "지원하지 않는 LLM_PROVIDER 값입니다. openai, nvidia, ollama 중에서 선택하세요."
+        )
+    return provider
+
+
 def build_chat_model() -> BaseChatModel:
     """Return a chat model instance based on runtime configuration."""
 
-    provider = os.getenv("LLM_PROVIDER", "").strip().lower()
+    provider = _normalise_provider(os.getenv("LLM_PROVIDER", ""))
     temperature = float(os.getenv("LLM_TEMPERATURE", "0.2"))
 
     if provider in {"nvidia", "nvidia-ai"} or (
@@ -57,6 +69,10 @@ def build_chat_model() -> BaseChatModel:
         from langchain_openai import ChatOpenAI
 
         model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        if not os.getenv("OPENAI_API_KEY"):
+            raise RuntimeError(
+                "Set OPENAI_API_KEY to use the OpenAI hosted models."
+            )
         return ChatOpenAI(model=model_name, temperature=temperature)
 
     # Default to Ollama-compatible local models to satisfy on-prem requirements.
