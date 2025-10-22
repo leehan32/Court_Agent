@@ -3,17 +3,17 @@ version: '3.8'
 services:
   db:
     image: pgvector/pgvector:pg16 # pgvector 이미지 사용
-    container_name: b2b-legal-db
+    container_name: legal-db
     environment:
       - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=password
+      - POSTGRES_PASSWORD=p@ss1234!
       - POSTGRES_DB=legal_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
       # 이 부분이 중요: 새 init.sql을 복사하고 실행합니다.
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
-      - "5432:5432"
+      - "55432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U user -d legal_db"]
       interval: 10s
