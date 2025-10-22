@@ -57,7 +57,7 @@ LangGraph 그래프는 다음 노드로 구성됩니다:
 
 
 
-##차후 개발 청사진
+## 차후 개발 청사진
 ![Animation](https://github.com/user-attachments/assets/f28cf24d-d500-4bf0-8857-3b3d361d9304)
 
 
