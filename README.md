@@ -55,6 +55,9 @@ LangGraph 그래프는 다음 노드로 구성됩니다:
 3. **지속적 개인화**: 변호사별 피드백 DB를 통해 사용할수록 사용자 맞춤형 초안이 생성.
 4. **업무 자동화**: 업로드 → 분석 → 초안 작성 → HWP/DOCX 다운로드까지 한 번의 워크플로우로 통합.
 
+
+
+##차후 개발 청사진
 ![Animation](https://github.com/user-attachments/assets/f28cf24d-d500-4bf0-8857-3b3d361d9304)
 
 
