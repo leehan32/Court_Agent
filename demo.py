@@ -1,4 +1,6 @@
 # 파일명: demo.py (프로젝트 최상위 폴더에 생성)
+import os
+
 import streamlit as st
 from dotenv import load_dotenv
 from src.db_utils import get_db_connection, set_rls_user
@@ -33,6 +35,36 @@ selected_firm = st.sidebar.selectbox(
     index=None,
     placeholder="로그인할 펌을 선택하세요"
 )
+
+provider_options = {
+    "기본 설정 (환경변수 기준)": None,
+    "OpenAI": "openai",
+    "로컬 LLM (Ollama)": "ollama",
+}
+
+env_default_provider = os.getenv("LLM_PROVIDER", "").strip().lower() or None
+if "llm_provider" not in st.session_state:
+    st.session_state.llm_provider = env_default_provider
+
+provider_labels = list(provider_options.keys())
+
+try:
+    default_index = provider_labels.index(
+        next(
+            label
+            for label, value in provider_options.items()
+            if value == st.session_state.llm_provider
+        )
+    )
+except StopIteration:
+    default_index = 0
+
+selected_provider_label = st.sidebar.selectbox(
+    "사용할 LLM 제공자:",
+    provider_labels,
+    index=default_index,
+)
+st.session_state.llm_provider = provider_options[selected_provider_label]
 
 if selected_firm:
     firm_info = firm_list[selected_firm]
@@ -108,7 +140,11 @@ if query:
                 st.warning("관련된 참고 자료를 찾지 못했습니다. LLM이 부정확하게 답변할 수 있습니다.")
             
             # LLM 답변 생성
-            answer, context_str = get_rag_answer(query, context_chunks)
+            answer, context_str = get_rag_answer(
+                query,
+                context_chunks,
+                provider=st.session_state.llm_provider,
+            )
             
             st.subheader("AI 답변")
             st.markdown(answer)

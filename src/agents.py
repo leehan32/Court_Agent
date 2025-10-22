@@ -35,11 +35,33 @@ def _normalise_provider(raw: str) -> str:
     return provider
 
 
-def build_chat_model() -> BaseChatModel:
-    """Return a chat model instance based on runtime configuration."""
+def build_chat_model(
+    provider_override: str | None = None,
+    temperature_override: float | None = None,
+) -> BaseChatModel:
+    """Return a chat model instance based on runtime configuration.
 
-    provider = _normalise_provider(os.getenv("LLM_PROVIDER", ""))
-    temperature = float(os.getenv("LLM_TEMPERATURE", "0.2"))
+    Parameters
+    ----------
+    provider_override:
+        Optional manual provider selection (e.g. ``"openai"`` or ``"ollama"``). When
+        omitted the ``LLM_PROVIDER`` environment variable and API key presence are
+        used to determine the backend.
+    temperature_override:
+        Optional manual temperature value. When omitted ``LLM_TEMPERATURE`` is used.
+    """
+
+    raw_provider = (
+        provider_override
+        if provider_override is not None
+        else os.getenv("LLM_PROVIDER", "")
+    )
+    provider = _normalise_provider(raw_provider)
+    temperature = (
+        float(temperature_override)
+        if temperature_override is not None
+        else float(os.getenv("LLM_TEMPERATURE", "0.2"))
+    )
 
     if provider in {"nvidia", "nvidia-ai"} or (
         not provider and os.getenv("NVIDIA_API_KEY")

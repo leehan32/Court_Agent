@@ -22,15 +22,25 @@ RAG_PROMPT_TEMPLATE = """
 """
 
 
-def get_rag_answer(query, context_chunks):
-    """검색된 RAG 청크와 쿼리를 바탕으로 LLM 답변을 생성합니다."""
+def get_rag_answer(query, context_chunks, provider: str | None = None):
+    """검색된 RAG 청크와 쿼리를 바탕으로 LLM 답변을 생성합니다.
+
+    Parameters
+    ----------
+    query:
+        사용자의 질문.
+    context_chunks:
+        RAG 검색으로 수집한 문맥 청크 목록.
+    provider:
+        선택적으로 사용할 LLM 제공자. ``None``이면 환경변수 설정을 따릅니다.
+    """
 
     context_str = "\n\n---\n\n".join(
         f"출처: {chunk['source']}\n내용: {chunk['text']}" for chunk in context_chunks
     )
 
     prompt = ChatPromptTemplate.from_template(RAG_PROMPT_TEMPLATE)
-    chain = prompt | build_chat_model() | StrOutputParser()
+    chain = prompt | build_chat_model(provider_override=provider) | StrOutputParser()
 
     response = chain.invoke({
         "context": context_str,
