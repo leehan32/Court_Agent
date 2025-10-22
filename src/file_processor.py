@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import io
 import json
 import logging
@@ -12,7 +13,6 @@ from typing import List, Optional, Tuple
 
 import fitz  # PyMuPDF
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import SentenceTransformerEmbeddings
 from pgvector.utils import Vector
 
 try:  # Optional dependency for DOCX parsing
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
 
-_embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
+_embeddings = None
 _text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=int(os.getenv("CHUNK_SIZE", "1000")),
     chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "120")),
@@ -83,6 +83,42 @@ def _detect_pii(text: str) -> bool:
         or PHONE_PATTERN.search(text)
         or ACCOUNT_PATTERN.search(text)
     )
+
+
+def _get_embeddings():
+    """Lazily initialise the sentence-transformer embeddings instance."""
+
+    global _embeddings
+    if _embeddings is not None:
+        return _embeddings
+
+    if importlib.util.find_spec("sentence_transformers") is None:
+        raise RuntimeError(
+            "sentence-transformers 패키지가 설치되어 있지 않아 임베딩을 생성할 수 없습니다. "
+            "'pip install -r requirements.txt' 또는 'pip install sentence-transformers' "
+            "명령으로 설치한 뒤 다시 시도해주세요."
+        )
+
+    embeddings_cls = None
+    if importlib.util.find_spec("langchain_huggingface") is not None:
+        from langchain_huggingface import HuggingFaceEmbeddings as _EmbeddingsCls
+
+        embeddings_cls = _EmbeddingsCls
+    else:
+        if importlib.util.find_spec("langchain_community.embeddings") is None:
+            raise RuntimeError(
+                "langchain-huggingface 또는 langchain-community 패키지가 설치되어 있지 않아 "
+                "임베딩을 불러올 수 없습니다. requirements.txt를 설치했는지 확인해주세요."
+            )
+
+        from langchain_community.embeddings import (
+            SentenceTransformerEmbeddings as _EmbeddingsCls,
+        )
+
+        embeddings_cls = _EmbeddingsCls
+
+    _embeddings = embeddings_cls(model_name=EMBEDDING_MODEL)
+    return _embeddings
 
 
 def build_parsed_document_from_text(
@@ -296,7 +332,9 @@ def store_document(
                 doc_id=doc_id,
             )
 
-        embeddings = _embeddings.embed_documents([chunk.text for chunk in parsed.chunks])
+        embeddings = _get_embeddings().embed_documents(
+            [chunk.text for chunk in parsed.chunks]
+        )
         embed_job_id = None
         if tracker:
             embed_job_id = tracker.start_step(
