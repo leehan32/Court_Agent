@@ -13,6 +13,7 @@ langsmith
 fastapi
 uvicorn
 python-multipart
+requests
 
 # --- 데모용 추가 라이브러리 ---
 streamlit
