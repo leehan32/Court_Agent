@@ -12,6 +12,7 @@ from pgvector.psycopg2 import register_vector
 def get_db_connection():
     """Create a new PostgreSQL connection using environment variables."""
 
+    database_url = os.getenv("DATABASE_URL")
     try:
         conn = psycopg2.connect(
             host=os.getenv("POSTGRES_HOST", "localhost"),
@@ -20,6 +21,16 @@ def get_db_connection():
             password=os.getenv("POSTGRES_PASSWORD", "password"),
             port=os.getenv("POSTGRES_PORT", 5432),
         )
+        if database_url:
+            conn = psycopg2.connect(database_url)
+        else:
+            conn = psycopg2.connect(
+                host=os.getenv("POSTGRES_HOST", "localhost"),
+                database=os.getenv("POSTGRES_DB", "legal_db"),
+                user=os.getenv("POSTGRES_USER", "user"),
+                password=os.getenv("POSTGRES_PASSWORD", "password"),
+                port=os.getenv("POSTGRES_PORT", 5432),
+            )
     except psycopg2.OperationalError as exc:
         raise RuntimeError(
             "PostgreSQL에 연결할 수 없습니다. 데이터베이스 주소와 POSTGRES_* 환경변수를 "
