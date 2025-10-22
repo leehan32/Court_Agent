@@ -11,9 +11,9 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
+import numpy as np
 from dotenv import load_dotenv
 from langchain_community.embeddings import SentenceTransformerEmbeddings
-from pgvector.utils import Vector
 
 from src.db_utils import get_db_connection
 from src.file_processor import EMBEDDING_DIM, EMBEDDING_MODEL
@@ -261,7 +261,7 @@ def _store_precedent(
                     section_id,
                     EMBEDDING_MODEL,
                     EMBEDDING_DIM,
-                    Vector(embedding),
+                    np.asarray(embedding, dtype=np.float32),
                 ),
             )
 
