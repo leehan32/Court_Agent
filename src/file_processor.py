@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import fitz  # PyMuPDF
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pgvector.utils import Vector
 
 try:  # Optional dependency for DOCX parsing
