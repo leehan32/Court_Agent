@@ -85,6 +85,44 @@ def _detect_pii(text: str) -> bool:
     )
 
 
+def build_parsed_document_from_text(
+    text: str,
+    *,
+    file_ext: str = "txt",
+    mime_type: Optional[str] = "text/plain",
+    ocr_used: bool = False,
+    ocr_engine: Optional[str] = None,
+) -> ParsedDocument:
+    """Construct a :class:`ParsedDocument` from raw text."""
+
+    normalised_text = text.strip()
+    if not normalised_text:
+        raise ValueError("텍스트가 비어 있어 ParsedDocument를 생성할 수 없습니다.")
+
+    encoded = normalised_text.encode("utf-8")
+
+    chunks: List[ParsedChunk] = []
+    for idx, chunk_text in enumerate(_text_splitter.split_text(normalised_text)):
+        chunks.append(ParsedChunk(text=chunk_text, position=idx))
+
+    byte_size = len(encoded)
+    sha256 = hashlib.sha256(encoded).hexdigest()
+    page_estimate = max(1, len(normalised_text) // 2000)
+
+    return ParsedDocument(
+        text=normalised_text,
+        file_ext=file_ext,
+        mime_type=mime_type,
+        page_count=page_estimate,
+        byte_size=byte_size,
+        sha256=sha256,
+        pii_flag=_detect_pii(normalised_text),
+        chunks=chunks,
+        ocr_used=ocr_used,
+        ocr_engine=ocr_engine,
+    )
+
+
 def _extract_pdf_text(file_bytes: bytes) -> Tuple[str, int]:
     with fitz.open(stream=file_bytes, filetype="pdf") as doc:
         pages = [page.get_text("text") for page in doc]
@@ -174,6 +212,7 @@ def store_document(
     parsed: ParsedDocument,
     *,
     tracker: Optional[ProcessingJobLogger] = None,
+    source_type: str = "upload",
 ) -> StoredDocument:
     """Persist the parsed document and its embeddings into PostgreSQL."""
 
@@ -181,13 +220,14 @@ def store_document(
         cur.execute(
             """
             INSERT INTO document (firm_id, user_id, title, source_type, mime_type, file_ext, sha256, bytes, page_count, pii_flag)
-            VALUES (%s, %s, %s, 'upload', %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING doc_id
             """,
             (
                 firm_id,
                 user_id,
                 title,
+                source_type,
                 parsed.mime_type,
                 parsed.file_ext,
                 parsed.sha256,
@@ -313,6 +353,7 @@ def ingest_document(
     conn=None,
     *,
     tracker: Optional[ProcessingJobLogger] = None,
+    source_type: str = "upload",
 ) -> Tuple[ParsedDocument, StoredDocument]:
     """High level helper used by LangGraph nodes to ingest a document."""
 
@@ -357,6 +398,7 @@ def ingest_document(
             title=file_name,
             parsed=parsed,
             tracker=tracker,
+            source_type=source_type,
         )
     finally:
         if close_conn:
