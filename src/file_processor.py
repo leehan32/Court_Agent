@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import fitz  # PyMuPDF
+import numpy as np
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pgvector.utils import Vector
 
 try:  # Optional dependency for DOCX parsing
     import docx  # type: ignore
@@ -353,7 +353,7 @@ def store_document(
                         chunk_id,
                         EMBEDDING_MODEL,
                         EMBEDDING_DIM,
-                        Vector(embedding_vector),
+                        np.asarray(embedding_vector, dtype=np.float32),
                     ),
                 )
         except Exception as exc:

@@ -8,10 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List
 
+import numpy as np
 from rich import print
 from rich.progress import track
-
-from pgvector.utils import Vector
 
 from src.db_utils import get_db_connection
 from src.file_processor import EMBEDDING_DIM, EMBEDDING_MODEL
@@ -90,7 +89,7 @@ def ingest_precedents(cases: Iterable[dict]) -> None:
                             section_id,
                             EMBEDDING_MODEL,
                             EMBEDDING_DIM,
-                            Vector(vectors[idx]),
+                            np.asarray(vectors[idx], dtype=np.float32),
                         ),
                     )
         conn.commit()

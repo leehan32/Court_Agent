@@ -10,9 +10,9 @@ from datetime import date
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
+import numpy as np
 from dotenv import load_dotenv
 from langchain_community.embeddings import SentenceTransformerEmbeddings
-from pgvector.utils import Vector
 
 from src.db_utils import get_db_connection
 from src.file_processor import EMBEDDING_DIM, EMBEDDING_MODEL
@@ -193,7 +193,12 @@ def _store_statute(
                 INSERT INTO statute_article_embedding (article_id, model_name, dim, embedding)
                 VALUES (%s, %s, %s, %s)
                 """,
-                (article_id, EMBEDDING_MODEL, EMBEDDING_DIM, Vector(embedding)),
+                (
+                    article_id,
+                    EMBEDDING_MODEL,
+                    EMBEDDING_DIM,
+                    np.asarray(embedding, dtype=np.float32),
+                ),
             )
 
     conn.commit()
